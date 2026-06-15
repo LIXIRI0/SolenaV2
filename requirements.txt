@@ -1,0 +1,6 @@
+datasets
+equinox
+jax
+optax
+python-dotenv
+sentencepiece
