@@ -1,3 +1,4 @@
+import argparse
 import os
 
 import equinox as eqx
@@ -20,6 +21,12 @@ from models.SolenaV2 import SolenaV2
 from utils import tokenizer
 
 CHAT_BOUNDARIES = ("<|user|>", "<|assistant|>", "<|end|>")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prompt", type=str, default=None)
+    return parser.parse_args()
 
 
 def format_prompt(prompt: str) -> str:
@@ -119,8 +126,14 @@ def generate(model: SolenaV2, prompt: str, key: jax.Array) -> str:
 
 
 def main() -> None:
+    args = parse_args()
     model = load_model()
     key = jax.random.PRNGKey(GEN_SEED)
+
+    if args.prompt is not None:
+        print(generate(model, args.prompt, key))
+        return
+
     exit_commands = {command.lower() for command in GEN_EXIT_COMMANDS}
 
     while True:
