@@ -14,7 +14,7 @@ from config import DATA_PATH
 
 DATASET_NAME = "HuggingFaceH4/ultrachat_200k"
 DEFAULT_SPLIT = "train_sft"
-DEFAULT_LIMIT = 5000
+DEFAULT_LIMIT = None
 FACE_TOKEN = os.getenv("FACE_TOKEN")
 
 
@@ -40,7 +40,7 @@ def format_messages(messages: list[dict[str, str]]) -> str:
 def prepare_data(
     output_path: str = DATA_PATH,
     split: str = DEFAULT_SPLIT,
-    limit: int = DEFAULT_LIMIT,
+    limit: int | None = DEFAULT_LIMIT,
     seed: int = 42,
     shuffle: bool = True,
 ) -> None:
@@ -51,19 +51,24 @@ def prepare_data(
     if not shard_files:
         raise ValueError(f"No parquet shards found for split {split!r}")
 
-    shard_path = hf_hub_download(
-        repo_id=DATASET_NAME,
-        repo_type="dataset",
-        filename=shard_files[0],
-        token=FACE_TOKEN,
-    )
+    shard_paths = [
+        hf_hub_download(
+            repo_id=DATASET_NAME,
+            repo_type="dataset",
+            filename=shard_file,
+            token=FACE_TOKEN,
+        )
+        for shard_file in shard_files
+    ]
 
-    dataset = load_dataset("parquet", data_files=shard_path, split="train")
+    dataset = load_dataset("parquet", data_files=shard_paths, split="train")
 
     if shuffle:
         dataset = dataset.shuffle(seed=seed)
 
-    dataset = dataset.select(range(min(limit, len(dataset))))
+    if limit is not None:
+        dataset = dataset.select(range(min(limit, len(dataset))))
+
     texts = [format_messages(example["messages"]) for example in dataset]
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)

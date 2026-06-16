@@ -20,9 +20,11 @@ from config import (
     SAVE_BEST_ONLY,
     SEQ_LEN,
     VAL_BATCHES,
+    VOCAB_SIZE,
 )
 from models.SolenaV2 import SolenaV2
 from utils.dataset import load_dataset
+from utils import tokenizer
 
 
 def cross_entropy_loss(logits: jax.Array, targets: jax.Array) -> jax.Array:
@@ -83,6 +85,12 @@ def load_checkpoint(model: SolenaV2) -> SolenaV2:
 
 
 def main() -> None:
+    if tokenizer.vocab_size() != VOCAB_SIZE:
+        raise ValueError(
+            f"tokenizer vocab size {tokenizer.vocab_size()} does not match config VOCAB_SIZE {VOCAB_SIZE}; "
+            "rerun training/train_bpe.py and training/encodedata.py"
+        )
+
     dataset = load_dataset()
     key = jax.random.PRNGKey(0)
     model_key, train_key = jax.random.split(key)

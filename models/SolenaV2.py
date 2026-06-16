@@ -1,7 +1,4 @@
-from __future__ import annotations
-
 import math
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
