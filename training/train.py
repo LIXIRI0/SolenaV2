@@ -16,9 +16,12 @@ from config import (
     EPOCHS_PER_RUN,
     LR,
     MAX_BATCHES,
+    NUM_DEVICES,
+    PER_DEVICE_BATCH_SIZE,
     RESUME,
     SAVE_BEST_ONLY,
     SEQ_LEN,
+    USE_DATA_PARALLEL,
     VAL_BATCHES,
     VOCAB_SIZE,
 )
@@ -53,10 +56,34 @@ def train_step(
     return model, opt_state, loss
 
 
+@eqx.filter_pmap(axis_name="devices")
+def parallel_train_step(
+    model: SolenaV2,
+    opt_state: optax.OptState,
+    optimizer: optax.GradientTransformation,
+    x: jax.Array,
+    y: jax.Array,
+    key: jax.Array,
+) -> tuple[SolenaV2, optax.OptState, jax.Array]:
+    loss, grads = loss_fn(model, x, y, key)
+    loss = jax.lax.pmean(loss, axis_name="devices")
+    grads = jax.lax.pmean(grads, axis_name="devices")
+    updates, opt_state = optimizer.update(grads, opt_state, model)
+    model = eqx.apply_updates(model, updates)
+    return model, opt_state, loss
+
+
 @eqx.filter_jit
 def eval_step(model: SolenaV2, x: jax.Array, y: jax.Array) -> jax.Array:
     logits = model(x, train=False)
     return cross_entropy_loss(logits, y)
+
+
+@eqx.filter_pmap(axis_name="devices")
+def parallel_eval_step(model: SolenaV2, x: jax.Array, y: jax.Array) -> jax.Array:
+    logits = model(x, train=False)
+    loss = cross_entropy_loss(logits, y)
+    return jax.lax.pmean(loss, axis_name="devices")
 
 
 def estimate_val_loss(model: SolenaV2, dataset, batches: int) -> float | None:
@@ -70,6 +97,30 @@ def estimate_val_loss(model: SolenaV2, dataset, batches: int) -> float | None:
         losses.append(float(loss))
 
     return sum(losses) / len(losses)
+
+
+def estimate_parallel_val_loss(model: SolenaV2, dataset, batches: int) -> float | None:
+    if batches <= 0:
+        return None
+
+    losses = []
+    for _ in range(batches):
+        vx, vy = dataset.get_sharded_val_batch()
+        loss = parallel_eval_step(model, jnp.asarray(vx), jnp.asarray(vy))
+        losses.append(float(jax.device_get(loss[0])))
+
+    return sum(losses) / len(losses)
+
+
+def replicate_tree(tree):
+    return jax.tree_util.tree_map(
+        lambda x: jnp.broadcast_to(x, (NUM_DEVICES,) + x.shape) if eqx.is_array(x) else x,
+        tree,
+    )
+
+
+def unreplicate_tree(tree):
+    return jax.tree_util.tree_map(lambda x: x[0] if eqx.is_array(x) else x, tree)
 
 
 def save_checkpoint(model: SolenaV2) -> None:
@@ -99,6 +150,18 @@ def main() -> None:
     optimizer = optax.adamw(LR)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
+    if USE_DATA_PARALLEL:
+        available_devices = jax.local_device_count()
+        if available_devices < NUM_DEVICES:
+            raise RuntimeError(f"requested {NUM_DEVICES} devices but JAX only sees {available_devices}")
+
+        print(
+            f"Using data parallel training on {NUM_DEVICES} devices "
+            f"with per-device batch {PER_DEVICE_BATCH_SIZE}"
+        )
+        model = replicate_tree(model)
+        opt_state = replicate_tree(opt_state)
+
     batches_per_epoch = MAX_BATCHES
     if batches_per_epoch is None:
         batches_per_epoch = max(1, len(dataset.train) // (BATCH_SIZE * SEQ_LEN))
@@ -110,19 +173,37 @@ def main() -> None:
 
         for batch_idx in range(1, batches_per_epoch + 1):
             train_key, step_key = jax.random.split(train_key)
-            x, y = dataset.get_train_batch()
-            model, opt_state, loss = train_step(
-                model,
-                opt_state,
-                optimizer,
-                jnp.asarray(x),
-                jnp.asarray(y),
-                step_key,
-            )
-            running_loss += float(loss)
+            if USE_DATA_PARALLEL:
+                x, y = dataset.get_sharded_train_batch()
+                step_keys = jax.random.split(step_key, NUM_DEVICES)
+                model, opt_state, loss = parallel_train_step(
+                    model,
+                    opt_state,
+                    optimizer,
+                    jnp.asarray(x),
+                    jnp.asarray(y),
+                    step_keys,
+                )
+                running_loss += float(jax.device_get(loss[0]))
+            else:
+                x, y = dataset.get_train_batch()
+                model, opt_state, loss = train_step(
+                    model,
+                    opt_state,
+                    optimizer,
+                    jnp.asarray(x),
+                    jnp.asarray(y),
+                    step_key,
+                )
+                running_loss += float(loss)
 
         train_loss = running_loss / batches_per_epoch
-        val_loss = estimate_val_loss(model, dataset, VAL_BATCHES)
+        if USE_DATA_PARALLEL:
+            val_loss = estimate_parallel_val_loss(model, dataset, VAL_BATCHES)
+            checkpoint_model = unreplicate_tree(model)
+        else:
+            val_loss = estimate_val_loss(model, dataset, VAL_BATCHES)
+            checkpoint_model = model
 
         checkpoint_metric_name = "val_loss" if val_loss is not None else "train_loss"
         checkpoint_score = val_loss if val_loss is not None else train_loss
@@ -130,7 +211,7 @@ def main() -> None:
 
         if not SAVE_BEST_ONLY or is_best_epoch:
             best_checkpoint_score = min(best_checkpoint_score, checkpoint_score)
-            save_checkpoint(model)
+            save_checkpoint(checkpoint_model)
             checkpoint_status = "saved"
         else:
             checkpoint_status = "skipped"

@@ -32,22 +32,26 @@ elif PROFILE == "cpu_full":
 
 elif PROFILE == "collab_tpu":
     VOCAB_SIZE     = 32000
-    SEQ_LEN        = 256
-    BATCH_SIZE     = 8
-    EMBED_DIM      = 384
-    N_HEADS        = 6
-    N_LAYERS       = 6
-    FF_DIM         = 1536
-    LR             = 2e-4
+    SEQ_LEN        = 512
+    NUM_DEVICES    = 8
+    PER_DEVICE_BATCH_SIZE = 6
+    BATCH_SIZE     = NUM_DEVICES * PER_DEVICE_BATCH_SIZE
+    EMBED_DIM      = 512
+    N_HEADS        = 8
+    N_LAYERS       = 8
+    FF_DIM         = 2048
+    LR             = 1.5e-4
     MAX_BATCHES    = None
-    VAL_BATCHES    = 20
-    EPOCHS_PER_RUN = 20
+    VAL_BATCHES    = 30
+    EPOCHS_PER_RUN = 50
     MAX_EPOCHS     = None
 
 elif PROFILE == "tpu_train":
     VOCAB_SIZE     = 32000
     SEQ_LEN        = 1024
-    BATCH_SIZE     = 32      # per chip
+    NUM_DEVICES    = 8
+    PER_DEVICE_BATCH_SIZE = 4
+    BATCH_SIZE     = NUM_DEVICES * PER_DEVICE_BATCH_SIZE
     EMBED_DIM      = 1024
     N_HEADS        = 16
     N_LAYERS       = 24
@@ -61,6 +65,12 @@ elif PROFILE == "tpu_train":
 
 else:
     raise ValueError(f"unknown PROFILE: {PROFILE}")
+
+if "NUM_DEVICES" not in globals():
+    NUM_DEVICES = 1
+if "PER_DEVICE_BATCH_SIZE" not in globals():
+    PER_DEVICE_BATCH_SIZE = BATCH_SIZE
+USE_DATA_PARALLEL = NUM_DEVICES > 1
 
 GEN_MAX_NEW_TOKENS = 200
 GEN_TEMPERATURE    = 0.7
