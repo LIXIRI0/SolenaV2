@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 
 import equinox as eqx
 import jax
@@ -81,6 +82,21 @@ def sample_next_token(logits: jax.Array, key: jax.Array) -> jax.Array:
     return jax.random.choice(key, logits.shape[-1], p=probs)
 
 
+@eqx.filter_jit
+def generate_next_token(
+    model: SolenaV2,
+    input_ids: jax.Array,
+    last_index: jax.Array,
+    key: jax.Array,
+) -> jax.Array:
+    x = model.token_embedding[input_ids] + model.pos_embedding[: input_ids.shape[1]]
+    for block in model.blocks:
+        x = block(x, train=False)
+    x = model.ln_f(x)
+    logits = x[0, last_index] @ model.token_embedding.T
+    return sample_next_token(logits, key)
+
+
 def stop_token_ids() -> set[int]:
     sp = tokenizer.load()
     ids = {tokenizer.eos_id()}
@@ -98,31 +114,59 @@ def clean_assistant_text(ids: list[int]) -> str:
     return text.strip()
 
 
+def model_input(ids: list[int]) -> tuple[jax.Array, jax.Array]:
+    context = ids[-SEQ_LEN:]
+    last_index = len(context) - 1
+
+    padded = [tokenizer.pad_id()] * SEQ_LEN
+    padded[: len(context)] = context
+    input_ids = jnp.asarray(padded, dtype=jnp.int32)[None, :]
+    return input_ids, jnp.asarray(last_index, dtype=jnp.int32)
+
+
 def generate(model: SolenaV2, prompt: str, key: jax.Array) -> str:
+    generated_ids = list(generate_ids(model, prompt, key))
+    if GEN_SHOW_FULL_TEXT:
+        prompt_ids = tokenizer.encode(format_prompt(prompt))
+        return tokenizer.decode(prompt_ids + generated_ids)
+    return clean_assistant_text(generated_ids)
+
+
+def generate_ids(model: SolenaV2, prompt: str, key: jax.Array):
     prompt_text = format_prompt(prompt)
     prompt_ids = tokenizer.encode(prompt_text)
-    generated_ids: list[int] = []
     all_ids = list(prompt_ids)
     stops = stop_token_ids()
 
     for _ in range(GEN_MAX_NEW_TOKENS):
         key, sample_key = jax.random.split(key)
-        context = all_ids[-SEQ_LEN:]
-        input_ids = jnp.asarray(context, dtype=jnp.int32)[None, :]
-
-        logits = model(input_ids, train=False)
-        next_token = int(sample_next_token(logits[0, -1], sample_key))
+        input_ids, last_index = model_input(all_ids)
+        next_token = int(generate_next_token(model, input_ids, last_index, sample_key))
 
         if next_token in stops:
             break
 
         all_ids.append(next_token)
-        generated_ids.append(next_token)
+        yield next_token
 
+
+def stream_generate(model: SolenaV2, prompt: str, key: jax.Array) -> None:
+    generated_ids: list[int] = []
+    previous_text = ""
+
+    print("Generating...", file=sys.stderr, flush=True)
     if GEN_SHOW_FULL_TEXT:
-        return tokenizer.decode(all_ids)
+        print(format_prompt(prompt), end="", flush=True)
 
-    return clean_assistant_text(generated_ids)
+    for token_id in generate_ids(model, prompt, key):
+        generated_ids.append(token_id)
+        text = clean_assistant_text(generated_ids)
+        chunk = text[len(previous_text) :]
+        if chunk:
+            print(chunk, end="", flush=True)
+            previous_text = text
+
+    print()
 
 
 def main() -> None:
@@ -131,7 +175,7 @@ def main() -> None:
     key = jax.random.PRNGKey(GEN_SEED)
 
     if args.prompt is not None:
-        print(generate(model, args.prompt, key))
+        stream_generate(model, args.prompt, key)
         return
 
     exit_commands = {command.lower() for command in GEN_EXIT_COMMANDS}
@@ -144,7 +188,7 @@ def main() -> None:
             continue
 
         key, prompt_key = jax.random.split(key)
-        print(generate(model, prompt, prompt_key))
+        stream_generate(model, prompt, prompt_key)
 
 
 if __name__ == "__main__":
