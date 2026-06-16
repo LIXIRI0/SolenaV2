@@ -32,15 +32,15 @@ elif PROFILE == "cpu_full":
 
 elif PROFILE == "collab_tpu":
     VOCAB_SIZE     = 32000
-    SEQ_LEN        = 512
-    BATCH_SIZE     = 16
-    EMBED_DIM      = 512
-    N_HEADS        = 8
-    N_LAYERS       = 8
-    FF_DIM         = 2048
+    SEQ_LEN        = 256
+    BATCH_SIZE     = 8
+    EMBED_DIM      = 384
+    N_HEADS        = 6
+    N_LAYERS       = 6
+    FF_DIM         = 1536
     LR             = 2e-4
     MAX_BATCHES    = None
-    VAL_BATCHES    = 50
+    VAL_BATCHES    = 20
     EPOCHS_PER_RUN = 20
     MAX_EPOCHS     = None
 
