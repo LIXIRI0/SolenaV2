@@ -125,10 +125,16 @@ SOURCES = (
                 field_candidates=("content", "text", "code"),
             ),
             DatasetOption(
-                dataset="codeparrot/github-code-clean",
+                dataset="bigcode/the-stack-smol-xl",
                 config=None,
                 split="train",
-                field_candidates=("content", "text", "code"),
+                field_candidates=("content",),
+            ),
+            DatasetOption(
+                dataset="ml6team/the-stack-smol-python",
+                config=None,
+                split="train",
+                field_candidates=("content",),
             ),
         ),
     ),
