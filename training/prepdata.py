@@ -8,7 +8,6 @@ from typing import Iterator
 from pathlib import Path
 
 import dotenv
-from datasets import load_dataset
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
@@ -17,13 +16,19 @@ dotenv.load_dotenv(ROOT_DIR / ".env")
 from config import (
     DATA_PATH,
     PRETRAIN_CHARS_PER_TOKEN,
+    PRETRAIN_HF_TIMEOUT,
     PRETRAIN_MIX,
     PRETRAIN_SEED,
+    PRETRAIN_SHUFFLE_BUFFER_SIZE,
     PRETRAIN_TARGET_TOKENS,
 )
 
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = str(PRETRAIN_HF_TIMEOUT)
+os.environ["HF_HUB_ETAG_TIMEOUT"] = str(PRETRAIN_HF_TIMEOUT)
+
+from datasets import load_dataset
+
 FACE_TOKEN = os.getenv("FACE_TOKEN")
-SHUFFLE_BUFFER_SIZE = 10_000
 MIN_DOC_CHARS = 200
 DEFAULT_MAX_CHARS = 16_000
 CS_MAX_CHARS = 12_000
@@ -188,7 +193,7 @@ def iter_source_examples(source: SourceSpec):
     for option in source.options:
         try:
             stream = load_stream(option)
-            stream = stream.shuffle(seed=PRETRAIN_SEED, buffer_size=SHUFFLE_BUFFER_SIZE)
+            stream = stream.shuffle(seed=PRETRAIN_SEED, buffer_size=PRETRAIN_SHUFFLE_BUFFER_SIZE)
             for example in stream:
                 yield option, example
             return
