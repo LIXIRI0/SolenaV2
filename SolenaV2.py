@@ -10,6 +10,7 @@ from config import (
     CHECKPOINT_PATH,
     GEN_EXIT_COMMANDS,
     GEN_MAX_NEW_TOKENS,
+    GEN_PROMPT_MODE,
     GEN_SEED,
     GEN_SHOW_FULL_TEXT,
     GEN_TEMPERATURE,
@@ -31,7 +32,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def format_prompt(prompt: str) -> str:
-    return f"<|user|>\n{prompt}\n<|assistant|>\n"
+    mode = GEN_PROMPT_MODE.lower()
+    if mode == "plain":
+        return prompt
+    if mode == "chat":
+        return f"<|user|>\n{prompt}\n<|assistant|>\n"
+    raise ValueError('GEN_PROMPT_MODE must be "plain" or "chat"')
 
 
 def load_model() -> SolenaV2:
@@ -89,11 +95,7 @@ def generate_next_token(
     last_index: jax.Array,
     key: jax.Array,
 ) -> jax.Array:
-    x = model.token_embedding[input_ids] + model.pos_embedding[: input_ids.shape[1]]
-    for block in model.blocks:
-        x = block(x, train=False)
-    x = model.ln_f(x)
-    logits = x[0, last_index] @ model.token_embedding.T
+    logits = model(input_ids, train=False)[0, last_index]
     return sample_next_token(logits, key)
 
 
@@ -155,8 +157,10 @@ def stream_generate(model: SolenaV2, prompt: str, key: jax.Array) -> None:
     previous_text = ""
 
     print("Generating...", file=sys.stderr, flush=True)
-    if GEN_SHOW_FULL_TEXT:
+    if GEN_SHOW_FULL_TEXT and GEN_PROMPT_MODE.lower() == "chat":
         print(format_prompt(prompt), end="", flush=True)
+    elif GEN_SHOW_FULL_TEXT:
+        print(prompt, end="", flush=True)
 
     for token_id in generate_ids(model, prompt, key):
         generated_ids.append(token_id)

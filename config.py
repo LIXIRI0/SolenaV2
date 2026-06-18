@@ -75,9 +75,10 @@ USE_DATA_PARALLEL = NUM_DEVICES > 1
 GEN_MAX_NEW_TOKENS = 300
 GEN_TEMPERATURE    = 0.8
 GEN_TOP_P          = 0.92
-GEN_TOP_K          = None
+GEN_TOP_K          = 50
 GEN_SEED           = 0
 GEN_SHOW_FULL_TEXT = False
+GEN_PROMPT_MODE    = "plain"  # "plain" for base pretraining, "chat" after SFT
 GEN_EXIT_COMMANDS  = ("exit", "quit", "q")
 
 PRETRAIN_TARGET_TOKENS = 300_000_000
