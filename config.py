@@ -40,10 +40,10 @@ elif PROFILE == "collab_tpu":
     N_HEADS        = 8
     N_LAYERS       = 8
     FF_DIM         = 2048
-    LR             = 1.5e-4
+    LR             = 5e-5
     MAX_BATCHES    = None
     VAL_BATCHES    = 30
-    EPOCHS_PER_RUN = 50
+    EPOCHS_PER_RUN = 10
     MAX_EPOCHS     = None
 
 elif PROFILE == "tpu_train":
