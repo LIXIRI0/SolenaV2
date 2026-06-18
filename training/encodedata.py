@@ -24,17 +24,18 @@ def write_streamed_tokens(temp_path: Path, dtype: np.dtype) -> int:
 
     with open(DATA_PATH, encoding="utf-8") as src, open(temp_path, "wb") as dst:
         for line_idx, line in enumerate(src, start=1):
-            ids = tokenizer.encode(line)
+            text = line.strip()
+            if not text:
+                continue
+
+            ids = tokenizer.encode(text)
             if ids:
-                arr = np.asarray(ids, dtype=dtype)
+                arr = np.asarray(ids + [eos], dtype=dtype)
                 arr.tofile(dst)
                 token_count += len(arr)
 
             if line_idx % PROGRESS_LINES == 0:
                 print(f"encoded {line_idx} lines | {token_count} tokens")
-
-        np.asarray([eos], dtype=dtype).tofile(dst)
-        token_count += 1
 
     return token_count
 

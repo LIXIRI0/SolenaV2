@@ -1,83 +1,339 @@
+import hashlib
 import os
+import random
+import re
 import sys
-import dotenv
+from dataclasses import dataclass
+from typing import Iterator
 from pathlib import Path
 
+import dotenv
 from datasets import load_dataset
-from huggingface_hub import hf_hub_download, list_repo_files
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
 dotenv.load_dotenv(ROOT_DIR / ".env")
 
-from config import DATA_PATH
+from config import (
+    DATA_PATH,
+    PRETRAIN_CHARS_PER_TOKEN,
+    PRETRAIN_MIX,
+    PRETRAIN_SEED,
+    PRETRAIN_TARGET_TOKENS,
+)
 
-DATASET_NAME = "HuggingFaceH4/ultrachat_200k"
-DEFAULT_SPLIT = "train_sft"
-DEFAULT_LIMIT = None
 FACE_TOKEN = os.getenv("FACE_TOKEN")
+SHUFFLE_BUFFER_SIZE = 10_000
+MIN_DOC_CHARS = 200
+DEFAULT_MAX_CHARS = 16_000
+CS_MAX_CHARS = 12_000
+PROGRESS_DOCS = 10_000
+WHITESPACE_RE = re.compile(r"\s+")
 
 
-def format_messages(messages: list[dict[str, str]]) -> str:
-    lines = []
-    for message in messages:
-        role = message.get("role")
-        content = message.get("content", "").strip()
-        if not content:
+@dataclass(frozen=True)
+class DatasetOption:
+    dataset: str
+    config: str | None
+    split: str
+    field_candidates: tuple[str, ...]
+    data_dir: str | None = None
+    streaming: bool = True
+
+
+@dataclass(frozen=True)
+class SourceSpec:
+    name: str
+    weight: float
+    options: tuple[DatasetOption, ...]
+    max_chars: int = DEFAULT_MAX_CHARS
+
+
+SOURCES = (
+    SourceSpec(
+        name="clean_web",
+        weight=PRETRAIN_MIX["clean_web"],
+        options=(
+            DatasetOption(
+                dataset="HuggingFaceFW/fineweb-edu",
+                config="sample-10BT",
+                split="train",
+                field_candidates=("text",),
+            ),
+        ),
+    ),
+    SourceSpec(
+        name="wiki",
+        weight=PRETRAIN_MIX["wiki"],
+        options=(
+            DatasetOption(
+                dataset="wikimedia/wikipedia",
+                config="20231101.en",
+                split="train",
+                field_candidates=("text",),
+            ),
+        ),
+    ),
+    SourceSpec(
+        name="stories",
+        weight=PRETRAIN_MIX["stories"],
+        options=(
+            DatasetOption(
+                dataset="emozilla/pg19",
+                config=None,
+                split="train",
+                field_candidates=("text", "content"),
+            ),
+        ),
+    ),
+    SourceSpec(
+        name="cs",
+        weight=PRETRAIN_MIX["cs"],
+        max_chars=CS_MAX_CHARS,
+        options=(
+            DatasetOption(
+                dataset="bigcode/starcoderdata",
+                config=None,
+                data_dir="github-issues-filtered-structured",
+                split="train",
+                field_candidates=("content", "text", "body", "comments"),
+            ),
+            DatasetOption(
+                dataset="bigcode/starcoderdata",
+                config=None,
+                data_dir="jupyter-scripts-dedup-filtered",
+                split="train",
+                field_candidates=("content", "text", "code"),
+            ),
+            DatasetOption(
+                dataset="bigcode/starcoderdata",
+                config=None,
+                data_dir="jupyter-structured-clean-dedup",
+                split="train",
+                field_candidates=("content", "text", "code", "cells"),
+            ),
+            DatasetOption(
+                dataset="bigcode/starcoderdata",
+                config=None,
+                data_dir="python",
+                split="train",
+                field_candidates=("content", "text", "code"),
+            ),
+            DatasetOption(
+                dataset="codeparrot/github-code-clean",
+                config=None,
+                split="train",
+                field_candidates=("content", "text", "code"),
+            ),
+        ),
+    ),
+)
+
+
+def stringify_value(value) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        parts = [stringify_value(item) for item in value.values()]
+        return " ".join(part for part in parts if part)
+    if isinstance(value, (list, tuple)):
+        parts = [stringify_value(item) for item in value]
+        return " ".join(part for part in parts if part)
+    return None
+
+
+def normalize_text(text: str) -> str:
+    return WHITESPACE_RE.sub(" ", text).strip()
+
+
+def extract_text(example: dict, field_candidates: tuple[str, ...]) -> str | None:
+    for field in field_candidates:
+        value = stringify_value(example.get(field))
+        if value and value.strip():
+            return value
+    return None
+
+
+def chunk_text(text: str, max_chars: int) -> list[str]:
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    for start in range(0, len(text), max_chars):
+        chunk = text[start : start + max_chars].strip()
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
+
+def stable_hash(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def load_stream(option: DatasetOption):
+    kwargs = {
+        "split": option.split,
+        "streaming": option.streaming,
+        "token": FACE_TOKEN,
+    }
+    if option.data_dir is not None:
+        kwargs["data_dir"] = option.data_dir
+    if option.config is None:
+        return load_dataset(option.dataset, **kwargs)
+    return load_dataset(option.dataset, option.config, **kwargs)
+
+
+def iter_source_examples(source: SourceSpec):
+    last_error: Exception | None = None
+    for option in source.options:
+        try:
+            stream = load_stream(option)
+            stream = stream.shuffle(seed=PRETRAIN_SEED, buffer_size=SHUFFLE_BUFFER_SIZE)
+            for example in stream:
+                yield option, example
+            return
+        except Exception as exc:
+            last_error = exc
+            print(f"{source.name}: failed {option.dataset}; trying fallback if available ({exc})")
+
+    if last_error is not None:
+        raise RuntimeError(f"all dataset options failed for source {source.name}") from last_error
+
+
+def iter_source_documents(
+    source: SourceSpec,
+    seen_hashes: set[str],
+    stats: dict[str, int],
+) -> Iterator[str]:
+    for option, example in iter_source_examples(source):
+        raw_text = extract_text(example, option.field_candidates)
+        if raw_text is None:
+            stats["skipped"] += 1
             continue
 
-        if role == "user":
-            lines.extend(["<|user|>", content])
-        elif role == "assistant":
-            lines.extend(["<|assistant|>", content])
-        else:
-            lines.extend([f"<|{role}|>", content])
+        text = normalize_text(raw_text)
+        if len(text) < MIN_DOC_CHARS:
+            stats["skipped"] += 1
+            continue
 
-    lines.append("<|end|>")
-    return "\n".join(lines)
+        for chunk in chunk_text(text, source.max_chars):
+            if len(chunk) < MIN_DOC_CHARS:
+                stats["skipped"] += 1
+                continue
+
+            text_hash = stable_hash(chunk)
+            if text_hash in seen_hashes:
+                stats["duplicates"] += 1
+                continue
+            seen_hashes.add(text_hash)
+
+            yield chunk
 
 
-def prepare_data(
-    output_path: str = DATA_PATH,
-    split: str = DEFAULT_SPLIT,
-    limit: int | None = DEFAULT_LIMIT,
-    seed: int = 42,
-    shuffle: bool = True,
+def empty_stats() -> dict[str, int]:
+    return {
+        "docs": 0,
+        "chars": 0,
+        "skipped": 0,
+        "duplicates": 0,
+    }
+
+
+@dataclass
+class SourceState:
+    source: SourceSpec
+    char_budget: int
+    iterator: Iterator[str]
+    stats: dict[str, int]
+    exhausted: bool = False
+
+    @property
+    def remaining_chars(self) -> int:
+        return max(self.char_budget - self.stats["chars"], 0)
+
+    @property
+    def active(self) -> bool:
+        return not self.exhausted and self.remaining_chars > 0
+
+
+def write_mixed_sources(
+    output,
+    states: list[SourceState],
 ) -> None:
-    repo_files = list_repo_files(DATASET_NAME, repo_type="dataset", token=FACE_TOKEN)
-    shard_files = sorted(
-        file for file in repo_files if file.startswith(f"data/{split}-") and file.endswith(".parquet")
-    )
-    if not shard_files:
-        raise ValueError(f"No parquet shards found for split {split!r}")
+    rng = random.Random(PRETRAIN_SEED)
 
-    shard_paths = [
-        hf_hub_download(
-            repo_id=DATASET_NAME,
-            repo_type="dataset",
-            filename=shard_file,
-            token=FACE_TOKEN,
-        )
-        for shard_file in shard_files
-    ]
+    while True:
+        active_states = [state for state in states if state.active]
+        if not active_states:
+            return
 
-    dataset = load_dataset("parquet", data_files=shard_paths, split="train")
+        weights = [state.remaining_chars for state in active_states]
+        state = rng.choices(active_states, weights=weights, k=1)[0]
 
-    if shuffle:
-        dataset = dataset.shuffle(seed=seed)
+        try:
+            chunk = next(state.iterator)
+        except StopIteration:
+            state.exhausted = True
+            print(f"{state.source.name}: stream exhausted before target budget")
+            continue
 
-    if limit is not None:
-        dataset = dataset.select(range(min(limit, len(dataset))))
+        output.write(chunk.replace("\n", " ") + "\n")
+        state.stats["docs"] += 1
+        state.stats["chars"] += len(chunk)
 
-    texts = [format_messages(example["messages"]) for example in dataset]
+        if state.stats["docs"] % PROGRESS_DOCS == 0:
+            approx_tokens = state.stats["chars"] // PRETRAIN_CHARS_PER_TOKEN
+            print(
+                f"{state.source.name}: {state.stats['docs']} docs | "
+                f"{state.stats['chars']} chars | ~{approx_tokens} tokens"
+            )
+
+
+def validate_mix() -> None:
+    total = sum(PRETRAIN_MIX.values())
+    if abs(total - 1.0) > 1e-6:
+        raise ValueError(f"PRETRAIN_MIX weights must sum to 1.0, got {total}")
+
+    source_names = {source.name for source in SOURCES}
+    mix_names = set(PRETRAIN_MIX)
+    if source_names != mix_names:
+        raise ValueError(f"PRETRAIN_MIX keys {mix_names} do not match source names {source_names}")
+
+
+def prepare_data(output_path: str = DATA_PATH) -> None:
+    validate_mix()
+    target_chars = PRETRAIN_TARGET_TOKENS * PRETRAIN_CHARS_PER_TOKEN
+    seen_hashes: set[str] = set()
+    states = []
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write("\n\n".join(texts))
-        f.write("\n")
+    with open(output_path, "w", encoding="utf-8") as output:
+        for source in SOURCES:
+            char_budget = int(target_chars * source.weight)
+            print(f"{source.name}: target {char_budget} chars (~{char_budget // PRETRAIN_CHARS_PER_TOKEN} tokens)")
+            stats = empty_stats()
+            states.append(
+                SourceState(
+                    source=source,
+                    char_budget=char_budget,
+                    iterator=iter_source_documents(source, seen_hashes, stats),
+                    stats=stats,
+                )
+            )
 
-    print(f"Wrote {len(texts)} conversations to {output_path}")
+        write_mixed_sources(output, states)
 
+    all_stats = {state.source.name: state.stats for state in states}
+    total_chars = sum(stats["chars"] for stats in all_stats.values())
+    print(f"Wrote mixed pretraining corpus to {output_path}")
+    for name, stats in all_stats.items():
+        share = (stats["chars"] / total_chars) if total_chars else 0.0
+        approx_tokens = stats["chars"] // PRETRAIN_CHARS_PER_TOKEN
+        print(
+            f"{name}: docs={stats['docs']} chars={stats['chars']} "
+            f"~tokens={approx_tokens} share={share:.2%} "
+            f"skipped={stats['skipped']} duplicates={stats['duplicates']}"
+        )
 
 
 if __name__ == "__main__":

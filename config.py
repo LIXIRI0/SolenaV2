@@ -80,6 +80,16 @@ GEN_SEED           = 0
 GEN_SHOW_FULL_TEXT = False
 GEN_EXIT_COMMANDS  = ("exit", "quit", "q")
 
+PRETRAIN_TARGET_TOKENS = 300_000_000
+PRETRAIN_CHARS_PER_TOKEN = 4
+PRETRAIN_SEED = 42
+PRETRAIN_MIX = {
+    "clean_web": 0.70,
+    "wiki": 0.15,
+    "stories": 0.10,
+    "cs": 0.05,
+}
+
 DROPOUT = 0.1
 
 ROOT_DIR         = os.path.dirname(os.path.abspath(__file__))
