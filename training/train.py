@@ -1,3 +1,5 @@
+import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -91,8 +93,8 @@ def estimate_val_loss(model: SolenaV2, dataset, batches: int) -> float | None:
         return None
 
     losses = []
-    for _ in range(batches):
-        vx, vy = dataset.get_val_batch()
+    for batch_idx in range(batches):
+        vx, vy = dataset.get_val_eval_batch(batch_idx, batches)
         loss = eval_step(model, jnp.asarray(vx), jnp.asarray(vy))
         losses.append(float(loss))
 
@@ -104,8 +106,8 @@ def estimate_parallel_val_loss(model: SolenaV2, dataset, batches: int) -> float 
         return None
 
     losses = []
-    for _ in range(batches):
-        vx, vy = dataset.get_sharded_val_batch()
+    for batch_idx in range(batches):
+        vx, vy = dataset.get_sharded_val_eval_batch(batch_idx, batches)
         loss = parallel_eval_step(model, jnp.asarray(vx), jnp.asarray(vy))
         losses.append(float(jax.device_get(loss[0])))
 
@@ -123,16 +125,36 @@ def unreplicate_tree(tree):
     return jax.tree_util.tree_map(lambda x: x[0] if eqx.is_array(x) else x, tree)
 
 
-def save_checkpoint(model: SolenaV2) -> None:
+def checkpoint_metadata_path() -> str:
+    return f"{CHECKPOINT_PATH}.json"
+
+
+def load_checkpoint_metadata() -> dict:
+    path = checkpoint_metadata_path()
+    if not os.path.exists(path):
+        return {}
+
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_checkpoint_metadata(metadata: dict) -> None:
+    with open(checkpoint_metadata_path(), "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+
+
+def save_checkpoint(model: SolenaV2, metadata: dict | None = None) -> None:
     os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
     eqx.tree_serialise_leaves(CHECKPOINT_PATH, model)
+    if metadata is not None:
+        save_checkpoint_metadata(metadata)
 
 
-def load_checkpoint(model: SolenaV2) -> SolenaV2:
+def load_checkpoint(model: SolenaV2) -> tuple[SolenaV2, dict, bool]:
     if RESUME and os.path.exists(CHECKPOINT_PATH):
         print(f"Loading checkpoint from {CHECKPOINT_PATH}")
-        return eqx.tree_deserialise_leaves(CHECKPOINT_PATH, model)
-    return model
+        return eqx.tree_deserialise_leaves(CHECKPOINT_PATH, model), load_checkpoint_metadata(), True
+    return model, {}, False
 
 
 def main() -> None:
@@ -146,9 +168,13 @@ def main() -> None:
     key = jax.random.PRNGKey(0)
     model_key, train_key = jax.random.split(key)
 
-    model = load_checkpoint(SolenaV2(model_key))
+    model, checkpoint_metadata, resumed_from_checkpoint = load_checkpoint(SolenaV2(model_key))
     optimizer = optax.adamw(LR)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+
+    best_checkpoint_score = float(checkpoint_metadata.get("best_score", float("inf")))
+    best_checkpoint_metric_name = checkpoint_metadata.get("metric_name", "val_loss")
+    needs_best_score_seed = resumed_from_checkpoint and SAVE_BEST_ONLY and not math.isfinite(best_checkpoint_score)
 
     if USE_DATA_PARALLEL:
         available_devices = jax.local_device_count()
@@ -162,11 +188,20 @@ def main() -> None:
         model = replicate_tree(model)
         opt_state = replicate_tree(opt_state)
 
+    if needs_best_score_seed:
+        if USE_DATA_PARALLEL:
+            seeded_val_loss = estimate_parallel_val_loss(model, dataset, VAL_BATCHES)
+        else:
+            seeded_val_loss = estimate_val_loss(model, dataset, VAL_BATCHES)
+
+        if seeded_val_loss is not None:
+            best_checkpoint_score = seeded_val_loss
+            best_checkpoint_metric_name = "val_loss"
+            print(f"Seeded best_val_loss from loaded checkpoint: {best_checkpoint_score:.4f}")
+
     batches_per_epoch = MAX_BATCHES
     if batches_per_epoch is None:
         batches_per_epoch = max(1, len(dataset.train) // (BATCH_SIZE * SEQ_LEN))
-
-    best_checkpoint_score = float("inf")
 
     for epoch in range(1, EPOCHS_PER_RUN + 1):
         running_loss = 0.0
@@ -210,8 +245,18 @@ def main() -> None:
         is_best_epoch = checkpoint_score < best_checkpoint_score
 
         if not SAVE_BEST_ONLY or is_best_epoch:
-            best_checkpoint_score = min(best_checkpoint_score, checkpoint_score)
-            save_checkpoint(checkpoint_model)
+            best_checkpoint_score = checkpoint_score
+            best_checkpoint_metric_name = checkpoint_metric_name
+            save_checkpoint(
+                checkpoint_model,
+                {
+                    "epoch": epoch,
+                    "metric_name": checkpoint_metric_name,
+                    "best_score": best_checkpoint_score,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                },
+            )
             checkpoint_status = "saved"
         else:
             checkpoint_status = "skipped"
@@ -219,13 +264,13 @@ def main() -> None:
         if val_loss is None:
             print(
                 f"epoch {epoch}/{EPOCHS_PER_RUN} | train_loss={train_loss:.4f} | "
-                f"checkpoint={checkpoint_status} | best_{checkpoint_metric_name}={best_checkpoint_score:.4f}"
+                f"checkpoint={checkpoint_status} | best_{best_checkpoint_metric_name}={best_checkpoint_score:.4f}"
             )
         else:
             print(
                 f"epoch {epoch}/{EPOCHS_PER_RUN} | train_loss={train_loss:.4f} | "
                 f"val_loss={val_loss:.4f} | checkpoint={checkpoint_status} | "
-                f"best_{checkpoint_metric_name}={best_checkpoint_score:.4f}"
+                f"best_{best_checkpoint_metric_name}={best_checkpoint_score:.4f}"
             )
 if __name__ == "__main__":
     main()
