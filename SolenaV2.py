@@ -9,10 +9,16 @@ import jax.numpy as jnp
 from config import (
     CHECKPOINT_PATH,
     GEN_EXIT_COMMANDS,
+    GEN_MAX_BANNED_TOKENS,
     GEN_MAX_NEW_TOKENS,
+    GEN_MIN_NEW_TOKENS,
+    GEN_NO_REPEAT_NGRAM_SIZE,
     GEN_PROMPT_MODE,
+    GEN_REPETITION_PENALTY,
+    GEN_REPETITION_WINDOW,
     GEN_SEED,
     GEN_SHOW_FULL_TEXT,
+    GEN_STOP_AFTER_SENTENCE,
     GEN_TEMPERATURE,
     GEN_TOP_K,
     GEN_TOP_P,
@@ -77,6 +83,27 @@ def apply_top_p(logits: jax.Array, top_p: float | None) -> jax.Array:
     return jnp.where(remove, -jnp.inf, logits)
 
 
+def token_mask(logits: jax.Array, ids: jax.Array) -> jax.Array:
+    valid = ids >= 0
+    safe_ids = jnp.where(valid, ids, 0)
+    counts = jnp.zeros(logits.shape, dtype=jnp.int32).at[safe_ids].add(valid.astype(jnp.int32))
+    return counts > 0
+
+
+def apply_repetition_penalty(logits: jax.Array, recent_ids: jax.Array) -> jax.Array:
+    if GEN_REPETITION_PENALTY <= 1:
+        return logits
+
+    repeated = token_mask(logits, recent_ids)
+    penalized = jnp.where(logits > 0, logits / GEN_REPETITION_PENALTY, logits * GEN_REPETITION_PENALTY)
+    return jnp.where(repeated, penalized, logits)
+
+
+def apply_banned_tokens(logits: jax.Array, banned_ids: jax.Array) -> jax.Array:
+    banned = token_mask(logits, banned_ids)
+    return jnp.where(banned, -jnp.inf, logits)
+
+
 def sample_next_token(logits: jax.Array, key: jax.Array) -> jax.Array:
     if GEN_TEMPERATURE <= 0:
         raise ValueError("GEN_TEMPERATURE must be > 0")
@@ -93,9 +120,13 @@ def generate_next_token(
     model: SolenaV2,
     input_ids: jax.Array,
     last_index: jax.Array,
+    recent_ids: jax.Array,
+    banned_ids: jax.Array,
     key: jax.Array,
 ) -> jax.Array:
     logits = model(input_ids, train=False)[0, last_index]
+    logits = apply_repetition_penalty(logits, recent_ids)
+    logits = apply_banned_tokens(logits, banned_ids)
     return sample_next_token(logits, key)
 
 
@@ -126,6 +157,37 @@ def model_input(ids: list[int]) -> tuple[jax.Array, jax.Array]:
     return input_ids, jnp.asarray(last_index, dtype=jnp.int32)
 
 
+def padded_token_array(ids: list[int], size: int) -> jax.Array:
+    if size <= 0:
+        return jnp.asarray([-1], dtype=jnp.int32)
+
+    padded = [-1] * size
+    clipped = ids[-size:]
+    padded[: len(clipped)] = clipped
+    return jnp.asarray(padded, dtype=jnp.int32)
+
+
+def banned_ngram_tokens(ids: list[int]) -> list[int]:
+    n = GEN_NO_REPEAT_NGRAM_SIZE
+    if n <= 1 or len(ids) < n - 1:
+        return []
+
+    prefix = tuple(ids[-(n - 1) :])
+    banned = []
+    for idx in range(len(ids) - n + 1):
+        if tuple(ids[idx : idx + n - 1]) == prefix:
+            banned.append(ids[idx + n - 1])
+    return banned[-GEN_MAX_BANNED_TOKENS:]
+
+
+def should_stop_after_text(generated_ids: list[int]) -> bool:
+    if not GEN_STOP_AFTER_SENTENCE or len(generated_ids) < GEN_MIN_NEW_TOKENS:
+        return False
+
+    text = clean_assistant_text(generated_ids).rstrip()
+    return text.endswith((".", "!", "?", '."', '!"', '?"'))
+
+
 def generate(model: SolenaV2, prompt: str, key: jax.Array) -> str:
     generated_ids = list(generate_ids(model, prompt, key))
     if GEN_SHOW_FULL_TEXT:
@@ -138,18 +200,25 @@ def generate_ids(model: SolenaV2, prompt: str, key: jax.Array):
     prompt_text = format_prompt(prompt)
     prompt_ids = tokenizer.encode(prompt_text)
     all_ids = list(prompt_ids)
+    generated_ids: list[int] = []
     stops = stop_token_ids()
 
     for _ in range(GEN_MAX_NEW_TOKENS):
         key, sample_key = jax.random.split(key)
         input_ids, last_index = model_input(all_ids)
-        next_token = int(generate_next_token(model, input_ids, last_index, sample_key))
+        recent_ids = padded_token_array(generated_ids, GEN_REPETITION_WINDOW)
+        banned_ids = padded_token_array(banned_ngram_tokens(all_ids), GEN_MAX_BANNED_TOKENS)
+        next_token = int(generate_next_token(model, input_ids, last_index, recent_ids, banned_ids, sample_key))
 
         if next_token in stops:
             break
 
         all_ids.append(next_token)
+        generated_ids.append(next_token)
         yield next_token
+
+        if should_stop_after_text(generated_ids):
+            break
 
 
 def stream_generate(model: SolenaV2, prompt: str, key: jax.Array) -> None:
