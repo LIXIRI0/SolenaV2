@@ -84,7 +84,7 @@ GEN_MAX_BANNED_TOKENS = 128
 GEN_STOP_AFTER_SENTENCE = True
 GEN_SEED           = 0
 GEN_SHOW_FULL_TEXT = False
-GEN_PROMPT_MODE    = "chat"  # "plain" for base pretraining, "chat" after SFT
+GEN_PROMPT_MODE    = "plain"  # "plain" for base pretraining, "chat" after SFT
 GEN_EXIT_COMMANDS  = ("exit", "quit", "q")
 
 PRETRAIN_TARGET_TOKENS = 300_000_000
