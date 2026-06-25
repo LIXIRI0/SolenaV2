@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 
 from config import (
+    BASE_CHECKPOINT_PATH,
     CHECKPOINT_PATH,
     GEN_EXIT_COMMANDS,
     GEN_MAX_BANNED_TOKENS,
@@ -22,7 +23,11 @@ from config import (
     GEN_TEMPERATURE,
     GEN_TOP_K,
     GEN_TOP_P,
+    GEN_USE_PERSONA_PRIMER,
     SEQ_LEN,
+    SFT_CREATOR_NAME,
+    SFT_PERSONA_NAME,
+    SFT_PERSONA_STYLE,
     VOCAB_SIZE,
 )
 from models.SolenaV2 import SolenaV2
@@ -37,12 +42,34 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def identity_text() -> str:
+    return (
+        f"I'm {SFT_PERSONA_NAME}, an AI model created by {SFT_CREATOR_NAME}. "
+        f"My style is {SFT_PERSONA_STYLE}."
+    )
+
+
+def persona_primer() -> str:
+    if not GEN_USE_PERSONA_PRIMER:
+        return ""
+
+    turns = [
+        ("Who are you?", f"{identity_text()} I'm here to help with questions, ideas, code, and projects."),
+        ("Who created you?", f"I was created by {SFT_CREATOR_NAME}."),
+        ("Hello", f"Hi, I'm {SFT_PERSONA_NAME}. How can I help?"),
+    ]
+    chunks = []
+    for user, assistant in turns:
+        chunks.append(f"<|user|>\n{user}\n<|assistant|>\n{assistant}\n<|end|>\n")
+    return "".join(chunks)
+
+
 def format_prompt(prompt: str) -> str:
     mode = GEN_PROMPT_MODE.lower()
     if mode == "plain":
         return prompt
     if mode == "chat":
-        return f"<|user|>\n{prompt}\n<|assistant|>\n"
+        return f"{persona_primer()}<|user|>\n{prompt}\n<|assistant|>\n"
     raise ValueError('GEN_PROMPT_MODE must be "plain" or "chat"')
 
 
@@ -53,7 +80,12 @@ def load_model() -> SolenaV2:
             "rerun training/train_bpe.py and training/encodedata.py"
         )
     if not os.path.exists(CHECKPOINT_PATH):
-        raise FileNotFoundError(f"checkpoint not found: {CHECKPOINT_PATH}")
+        raise FileNotFoundError(
+            f"checkpoint not found: {CHECKPOINT_PATH}\n"
+            f"active generation mode is {GEN_PROMPT_MODE!r}. "
+            f"For SFT generation, copy/download the trained SFT checkpoint there. "
+            f"Base checkpoint path is {BASE_CHECKPOINT_PATH}."
+        )
 
     model = SolenaV2(jax.random.PRNGKey(0))
     return eqx.tree_deserialise_leaves(CHECKPOINT_PATH, model)
@@ -180,6 +212,13 @@ def banned_ngram_tokens(ids: list[int]) -> list[int]:
     return banned[-GEN_MAX_BANNED_TOKENS:]
 
 
+def banned_generation_tokens(generated_ids: list[int], stops: set[int]) -> list[int]:
+    banned = banned_ngram_tokens(generated_ids)
+    if len(generated_ids) < GEN_MIN_NEW_TOKENS:
+        banned.extend(stops)
+    return banned[-GEN_MAX_BANNED_TOKENS:]
+
+
 def should_stop_after_text(generated_ids: list[int]) -> bool:
     if not GEN_STOP_AFTER_SENTENCE or len(generated_ids) < GEN_MIN_NEW_TOKENS:
         return False
@@ -207,10 +246,10 @@ def generate_ids(model: SolenaV2, prompt: str, key: jax.Array):
         key, sample_key = jax.random.split(key)
         input_ids, last_index = model_input(all_ids)
         recent_ids = padded_token_array(generated_ids, GEN_REPETITION_WINDOW)
-        banned_ids = padded_token_array(banned_ngram_tokens(all_ids), GEN_MAX_BANNED_TOKENS)
+        banned_ids = padded_token_array(banned_generation_tokens(generated_ids, stops), GEN_MAX_BANNED_TOKENS)
         next_token = int(generate_next_token(model, input_ids, last_index, recent_ids, banned_ids, sample_key))
 
-        if next_token in stops:
+        if next_token in stops and len(generated_ids) >= GEN_MIN_NEW_TOKENS:
             break
 
         all_ids.append(next_token)

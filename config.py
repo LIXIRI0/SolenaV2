@@ -74,7 +74,7 @@ if "PER_DEVICE_BATCH_SIZE" not in globals():
 USE_DATA_PARALLEL = NUM_DEVICES > 1
 
 if TRAIN_STAGE == "sft":
-    LR = 2e-5
+    LR = 1e-5
     EPOCHS_PER_RUN = 3
 elif TRAIN_STAGE != "pretrain":
     raise ValueError(f"unknown TRAIN_STAGE: {TRAIN_STAGE}")
@@ -92,6 +92,7 @@ GEN_STOP_AFTER_SENTENCE = True
 GEN_SEED           = 0
 GEN_SHOW_FULL_TEXT = False
 GEN_PROMPT_MODE    = "chat" if TRAIN_STAGE == "sft" else "plain"
+GEN_USE_PERSONA_PRIMER = TRAIN_STAGE == "sft"
 GEN_EXIT_COMMANDS  = ("exit", "quit", "q")
 
 PRETRAIN_TARGET_TOKENS = 300_000_000
