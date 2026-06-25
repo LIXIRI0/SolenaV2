@@ -114,11 +114,12 @@ GEN_EXIT_COMMANDS  = ("exit", "quit", "q")
 PRETRAIN_TARGET_TOKENS = 1_000_000_000
 PRETRAIN_CHARS_PER_TOKEN = 4
 PRETRAIN_SEED = 42
-PRETRAIN_HF_TIMEOUT = 60
-PRETRAIN_SHUFFLE_BUFFER_SIZE = 10_000
+PRETRAIN_HF_TIMEOUT = 120
+PRETRAIN_SHUFFLE_BUFFER_SIZE = 0
 PRETRAIN_MIX = {
-    "clean_web": 0.70,
-    "wiki": 0.15,
+    "clean_web": 0.45,
+    "wiki": 0.25,
+    "textbooks": 0.15,
     "stories": 0.10,
     "cs": 0.05,
 }

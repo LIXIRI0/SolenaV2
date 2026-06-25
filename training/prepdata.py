@@ -1,6 +1,5 @@
 import hashlib
 import os
-import random
 import re
 import sys
 from dataclasses import dataclass
@@ -25,6 +24,8 @@ from config import (
 
 os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = str(PRETRAIN_HF_TIMEOUT)
 os.environ["HF_HUB_ETAG_TIMEOUT"] = str(PRETRAIN_HF_TIMEOUT)
+os.environ["HF_DATASETS_DOWNLOAD_TIMEOUT"] = str(PRETRAIN_HF_TIMEOUT)
+os.environ["HF_DATASETS_ETAG_TIMEOUT"] = str(PRETRAIN_HF_TIMEOUT)
 
 from datasets import load_dataset
 
@@ -60,6 +61,12 @@ SOURCES = (
         weight=PRETRAIN_MIX["clean_web"],
         options=(
             DatasetOption(
+                dataset="HuggingFaceTB/smollm-corpus",
+                config="fineweb-edu-dedup",
+                split="train",
+                field_candidates=("text",),
+            ),
+            DatasetOption(
                 dataset="HuggingFaceFW/fineweb-edu",
                 config="sample-10BT",
                 split="train",
@@ -72,6 +79,12 @@ SOURCES = (
         weight=PRETRAIN_MIX["wiki"],
         options=(
             DatasetOption(
+                dataset="Salesforce/wikitext",
+                config="wikitext-103-raw-v1",
+                split="train",
+                field_candidates=("text",),
+            ),
+            DatasetOption(
                 dataset="wikimedia/wikipedia",
                 config="20231101.en",
                 split="train",
@@ -80,9 +93,27 @@ SOURCES = (
         ),
     ),
     SourceSpec(
+        name="textbooks",
+        weight=PRETRAIN_MIX["textbooks"],
+        options=(
+            DatasetOption(
+                dataset="HuggingFaceTB/smollm-corpus",
+                config="cosmopedia-v2",
+                split="train",
+                field_candidates=("text", "prompt"),
+            ),
+        ),
+    ),
+    SourceSpec(
         name="stories",
         weight=PRETRAIN_MIX["stories"],
         options=(
+            DatasetOption(
+                dataset="roneneldan/TinyStories",
+                config=None,
+                split="train",
+                field_candidates=("text",),
+            ),
             DatasetOption(
                 dataset="emozilla/pg19",
                 config=None,
@@ -96,34 +127,6 @@ SOURCES = (
         weight=PRETRAIN_MIX["cs"],
         max_chars=CS_MAX_CHARS,
         options=(
-            DatasetOption(
-                dataset="bigcode/starcoderdata",
-                config=None,
-                data_dir="github-issues-filtered-structured",
-                split="train",
-                field_candidates=("content", "text", "body", "comments"),
-            ),
-            DatasetOption(
-                dataset="bigcode/starcoderdata",
-                config=None,
-                data_dir="jupyter-scripts-dedup-filtered",
-                split="train",
-                field_candidates=("content", "text", "code"),
-            ),
-            DatasetOption(
-                dataset="bigcode/starcoderdata",
-                config=None,
-                data_dir="jupyter-structured-clean-dedup",
-                split="train",
-                field_candidates=("content", "text", "code", "cells"),
-            ),
-            DatasetOption(
-                dataset="bigcode/starcoderdata",
-                config=None,
-                data_dir="python",
-                split="train",
-                field_candidates=("content", "text", "code"),
-            ),
             DatasetOption(
                 dataset="bigcode/the-stack-smol-xl",
                 config=None,
@@ -198,14 +201,25 @@ def iter_source_examples(source: SourceSpec):
     last_error: Exception | None = None
     for option in source.options:
         try:
+            option_name = option.dataset
+            if option.config is not None:
+                option_name = f"{option_name}/{option.config}"
+            if option.data_dir is not None:
+                option_name = f"{option_name}/{option.data_dir}"
+            print(f"{source.name}: opening {option_name}", flush=True)
             stream = load_stream(option)
-            stream = stream.shuffle(seed=PRETRAIN_SEED, buffer_size=PRETRAIN_SHUFFLE_BUFFER_SIZE)
+            if PRETRAIN_SHUFFLE_BUFFER_SIZE > 0:
+                print(
+                    f"{source.name}: shuffling stream with buffer {PRETRAIN_SHUFFLE_BUFFER_SIZE}",
+                    flush=True,
+                )
+                stream = stream.shuffle(seed=PRETRAIN_SEED, buffer_size=PRETRAIN_SHUFFLE_BUFFER_SIZE)
             for example in stream:
                 yield option, example
-            return
+            print(f"{source.name}: exhausted {option.dataset}; trying fallback if available", flush=True)
         except Exception as exc:
             last_error = exc
-            print(f"{source.name}: failed {option.dataset}; trying fallback if available ({exc})")
+            print(f"{source.name}: failed {option.dataset}; trying fallback if available ({exc})", flush=True)
 
     if last_error is not None:
         raise RuntimeError(f"all dataset options failed for source {source.name}") from last_error
@@ -267,37 +281,30 @@ class SourceState:
         return not self.exhausted and self.remaining_chars > 0
 
 
-def write_mixed_sources(
+def write_sources(
     output,
     states: list[SourceState],
 ) -> None:
-    rng = random.Random(PRETRAIN_SEED)
+    for state in states:
+        while state.active:
+            try:
+                chunk = next(state.iterator)
+            except StopIteration:
+                state.exhausted = True
+                print(f"{state.source.name}: stream exhausted before target budget")
+                break
 
-    while True:
-        active_states = [state for state in states if state.active]
-        if not active_states:
-            return
+            output.write(chunk.replace("\n", " ") + "\n")
+            state.stats["docs"] += 1
+            state.stats["chars"] += len(chunk)
 
-        weights = [state.remaining_chars for state in active_states]
-        state = rng.choices(active_states, weights=weights, k=1)[0]
-
-        try:
-            chunk = next(state.iterator)
-        except StopIteration:
-            state.exhausted = True
-            print(f"{state.source.name}: stream exhausted before target budget")
-            continue
-
-        output.write(chunk.replace("\n", " ") + "\n")
-        state.stats["docs"] += 1
-        state.stats["chars"] += len(chunk)
-
-        if state.stats["docs"] % PROGRESS_DOCS == 0:
-            approx_tokens = state.stats["chars"] // PRETRAIN_CHARS_PER_TOKEN
-            print(
-                f"{state.source.name}: {state.stats['docs']} docs | "
-                f"{state.stats['chars']} chars | ~{approx_tokens} tokens"
-            )
+            if state.stats["docs"] % PROGRESS_DOCS == 0:
+                approx_tokens = state.stats["chars"] // PRETRAIN_CHARS_PER_TOKEN
+                print(
+                    f"{state.source.name}: {state.stats['docs']} docs | "
+                    f"{state.stats['chars']} chars | ~{approx_tokens} tokens",
+                    flush=True,
+                )
 
 
 def validate_mix() -> None:
@@ -321,7 +328,11 @@ def prepare_data(output_path: str = PRETRAIN_DATA_PATH) -> None:
     with open(output_path, "w", encoding="utf-8") as output:
         for source in SOURCES:
             char_budget = int(target_chars * source.weight)
-            print(f"{source.name}: target {char_budget} chars (~{char_budget // PRETRAIN_CHARS_PER_TOKEN} tokens)")
+            print(
+                f"{source.name}: target {char_budget} chars "
+                f"(~{char_budget // PRETRAIN_CHARS_PER_TOKEN} tokens)",
+                flush=True,
+            )
             stats = empty_stats()
             states.append(
                 SourceState(
@@ -332,7 +343,7 @@ def prepare_data(output_path: str = PRETRAIN_DATA_PATH) -> None:
                 )
             )
 
-        write_mixed_sources(output, states)
+        write_sources(output, states)
 
     all_stats = {state.source.name: state.stats for state in states}
     total_chars = sum(stats["chars"] for stats in all_stats.values())
