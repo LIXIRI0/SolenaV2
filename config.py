@@ -67,12 +67,12 @@ elif PROFILE == "kaggle_tpu_8":
 
 elif PROFILE == "tpu_train":
     VOCAB_SIZE     = 32000
-    SEQ_LEN        = 1024
+    SEQ_LEN        = 768
     NUM_DEVICES    = 8
-    PER_DEVICE_BATCH_SIZE = 4
+    PER_DEVICE_BATCH_SIZE = 1
     BATCH_SIZE     = NUM_DEVICES * PER_DEVICE_BATCH_SIZE
     EMBED_DIM      = 1024
-    N_HEADS        = 16
+    N_HEADS        = 8
     N_LAYERS       = 24
     FF_DIM         = 4096
     LR             = 1.5e-4
@@ -98,6 +98,7 @@ if "PARAM_DTYPE" not in globals():
 USE_DATA_PARALLEL = NUM_DEVICES > 1
 USE_REMAT = PROFILE in ("kaggle_tpu_8", "tpu_train")
 LOGIT_CHUNK_SIZE = 64
+DATASET_SEED = 1337
 
 if TRAIN_STAGE == "sft":
     LR = 1e-5
@@ -122,6 +123,7 @@ GEN_EXIT_COMMANDS  = ("exit", "quit", "q")
 
 PRETRAIN_TARGET_TOKENS = 1_000_000_000
 PRETRAIN_CHARS_PER_TOKEN = 4
+VAL_RATIO = 0.05
 PRETRAIN_SEED = 42
 PRETRAIN_HF_TIMEOUT = 120
 PRETRAIN_SHUFFLE_BUFFER_SIZE = 0
@@ -172,3 +174,35 @@ TOKENIZER_PATH = os.path.join(ROOT_DIR, "checkpoints", "tokenizer", "solena.mode
 
 RESUME         = True
 SAVE_BEST_ONLY = True
+
+
+def attention_matrix_mb() -> float:
+    dtype_bytes = 2 if PARAM_DTYPE == "bfloat16" else 4
+    return N_HEADS * SEQ_LEN * SEQ_LEN * dtype_bytes / (1024 * 1024)
+
+
+def validate_config() -> None:
+    if EMBED_DIM % N_HEADS != 0:
+        raise ValueError("EMBED_DIM must be divisible by N_HEADS")
+    if NUM_DEVICES * PER_DEVICE_BATCH_SIZE != BATCH_SIZE:
+        raise ValueError("BATCH_SIZE must equal NUM_DEVICES * PER_DEVICE_BATCH_SIZE")
+    if LOGIT_CHUNK_SIZE <= 0:
+        raise ValueError("LOGIT_CHUNK_SIZE must be positive")
+    if not 0 < VAL_RATIO < 1:
+        raise ValueError("VAL_RATIO must be between 0 and 1")
+    if OPTIMIZER not in {"adamw", "adafactor"}:
+        raise ValueError(f"unknown OPTIMIZER: {OPTIMIZER}")
+    if PARAM_DTYPE not in {"float32", "bfloat16"}:
+        raise ValueError(f"unknown PARAM_DTYPE: {PARAM_DTYPE}")
+    if GEN_TEMPERATURE <= 0:
+        raise ValueError("GEN_TEMPERATURE must be > 0")
+    if abs(sum(PRETRAIN_MIX.values()) - 1.0) > 1e-6:
+        raise ValueError("PRETRAIN_MIX weights must sum to 1.0")
+    if PROFILE in {"kaggle_tpu_8", "tpu_train"} and attention_matrix_mb() > 14:
+        raise ValueError(
+            f"attention score tensor is likely too large for TPU vmem: "
+            f"{attention_matrix_mb():.1f}MB; lower SEQ_LEN or N_HEADS"
+        )
+
+
+validate_config()

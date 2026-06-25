@@ -1,4 +1,3 @@
-import math
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -71,18 +70,17 @@ class CausalSelfAttention(eqx.Module):
 
         qkv = x @ self.qkv_w + self.qkv_b
         qkv = qkv.reshape(batch, seq_len, 3, self.n_heads, head_dim)
-        qkv = jnp.transpose(qkv, (2, 0, 3, 1, 4))
-        q, k, v = qkv[0], qkv[1], qkv[2]
+        q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
 
-        scores = ((q @ jnp.swapaxes(k, -1, -2)) / math.sqrt(head_dim)).astype(jnp.float32)
-        mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=bool))
-        scores = jnp.where(mask[None, None, :, :], scores, -jnp.inf)
-
-        weights = jax.nn.softmax(scores, axis=-1).astype(v.dtype)
-        weights = _dropout(weights, key, self.dropout, train)
-
-        out = weights @ v
-        out = jnp.transpose(out, (0, 2, 1, 3)).reshape(batch, seq_len, embed_dim)
+        out = jax.nn.dot_product_attention(
+            q,
+            k,
+            v,
+            scale=head_dim**-0.5,
+            is_causal=True,
+        )
+        out = _dropout(out, key, self.dropout, train)
+        out = out.reshape(batch, seq_len, embed_dim)
         return out @ self.out_w + self.out_b
 
 

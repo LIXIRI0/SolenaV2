@@ -13,13 +13,13 @@ from config import (
     TRAIN_MASK_PATH,
     TRAIN_TOKENS_PATH,
     USE_LOSS_MASK,
+    VAL_RATIO,
     VAL_MASK_PATH,
     VAL_TOKENS_PATH,
     VOCAB_SIZE,
 )
 from utils import tokenizer
 
-VAL_RATIO = 0.05
 COPY_CHUNK_SIZE = 1_000_000
 PROGRESS_LINES = 10_000
 SPLIT_HASH_SEED = "solena-v2-split-v1"
@@ -159,12 +159,20 @@ def copy_memmap(src: np.memmap, dst_path: str, start: int, end: int, dtype: np.d
         chunk_end = min(offset + COPY_CHUNK_SIZE, end)
         out[offset - start : chunk_end - start] = src[offset:chunk_end]
     out.flush()
+    del out
 
 
-def copy_temp_to_npy(temp_path: Path, output_path: str, token_count: int, dtype: np.dtype) -> None:
+def copy_temp_to_staged_npy(temp_path: Path, output_path: str, token_count: int, dtype: np.dtype) -> Path:
+    staged_path = Path(f"{output_path}.next.npy")
     tokens = np.memmap(temp_path, mode="r", dtype=dtype, shape=(token_count,))
-    copy_memmap(tokens, output_path, 0, token_count, dtype)
+    copy_memmap(tokens, str(staged_path), 0, token_count, dtype)
     del tokens
+    return staged_path
+
+
+def replace_staged_outputs(staged_outputs: list[tuple[Path, str]]) -> None:
+    for staged_path, output_path in staged_outputs:
+        staged_path.replace(output_path)
 
 
 def encode_data() -> None:
@@ -199,21 +207,37 @@ def encode_data() -> None:
             "use more source documents or adjust VAL_RATIO"
         )
 
-    copy_temp_to_npy(train_temp_path, TRAIN_TOKENS_PATH, train_tokens, dtype)
-    copy_temp_to_npy(val_temp_path, VAL_TOKENS_PATH, val_tokens, dtype)
-    train_temp_path.unlink(missing_ok=True)
-    val_temp_path.unlink(missing_ok=True)
+    staged_outputs = [
+        (copy_temp_to_staged_npy(train_temp_path, TRAIN_TOKENS_PATH, train_tokens, dtype), TRAIN_TOKENS_PATH),
+        (copy_temp_to_staged_npy(val_temp_path, VAL_TOKENS_PATH, val_tokens, dtype), VAL_TOKENS_PATH),
+    ]
 
     if train_mask_temp_path is not None and val_mask_temp_path is not None:
         if TRAIN_MASK_PATH is None or VAL_MASK_PATH is None:
             raise ValueError("TRAIN_MASK_PATH and VAL_MASK_PATH must be set when USE_LOSS_MASK=True")
 
-        copy_temp_to_npy(train_mask_temp_path, TRAIN_MASK_PATH, train_tokens, np.uint8)
-        copy_temp_to_npy(val_mask_temp_path, VAL_MASK_PATH, val_tokens, np.uint8)
-        train_mask_temp_path.unlink(missing_ok=True)
-        val_mask_temp_path.unlink(missing_ok=True)
+        staged_outputs.extend(
+            [
+                (
+                    copy_temp_to_staged_npy(train_mask_temp_path, TRAIN_MASK_PATH, train_tokens, np.uint8),
+                    TRAIN_MASK_PATH,
+                ),
+                (
+                    copy_temp_to_staged_npy(val_mask_temp_path, VAL_MASK_PATH, val_tokens, np.uint8),
+                    VAL_MASK_PATH,
+                ),
+            ]
+        )
         print(f"train_mask: ({train_tokens},)")
         print(f"val_mask: ({val_tokens},)")
+
+    replace_staged_outputs(staged_outputs)
+    train_temp_path.unlink(missing_ok=True)
+    val_temp_path.unlink(missing_ok=True)
+    if train_mask_temp_path is not None:
+        train_mask_temp_path.unlink(missing_ok=True)
+    if val_mask_temp_path is not None:
+        val_mask_temp_path.unlink(missing_ok=True)
 
     total_tokens = train_tokens + val_tokens
     val_share = val_tokens / total_tokens

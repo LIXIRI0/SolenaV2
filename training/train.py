@@ -33,9 +33,15 @@ from config import (
     SAVE_BEST_ONLY,
     SEQ_LEN,
     TRAIN_STAGE,
+    TRAIN_MASK_PATH,
+    TRAIN_TOKENS_PATH,
     USE_DATA_PARALLEL,
+    USE_LOSS_MASK,
     USE_REMAT,
     VAL_BATCHES,
+    VAL_MASK_PATH,
+    VAL_RATIO,
+    VAL_TOKENS_PATH,
     VOCAB_SIZE,
 )
 from models.SolenaV2 import SolenaV2
@@ -45,7 +51,7 @@ from utils import tokenizer
 MAX_EFFECTIVE_LOGIT_CHUNK_SIZE = 64
 
 
-def attention_score_mb() -> float:
+def attention_matrix_mb() -> float:
     dtype_bytes = 2 if PARAM_DTYPE == "bfloat16" else 4
     return N_HEADS * SEQ_LEN * SEQ_LEN * dtype_bytes / (1024 * 1024)
 
@@ -203,22 +209,56 @@ def unreplicate_tree(tree):
     return jax.tree_util.tree_map(lambda x: x[0] if eqx.is_array(x) else x, tree)
 
 
-def checkpoint_metadata_path() -> str:
-    return f"{CHECKPOINT_PATH}.json"
+def checkpoint_metadata_path(path: str = CHECKPOINT_PATH) -> str:
+    return f"{path}.json"
 
 
-def load_checkpoint_metadata() -> dict:
-    path = checkpoint_metadata_path()
-    if not os.path.exists(path):
+def load_checkpoint_metadata(path: str = CHECKPOINT_PATH) -> dict:
+    metadata_path = checkpoint_metadata_path(path)
+    if not os.path.exists(metadata_path):
         return {}
 
-    with open(path, encoding="utf-8") as f:
+    with open(metadata_path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def save_checkpoint_metadata(metadata: dict) -> None:
     with open(checkpoint_metadata_path(), "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
+
+
+def model_signature() -> dict:
+    return {
+        "vocab_size": VOCAB_SIZE,
+        "seq_len": SEQ_LEN,
+        "embed_dim": EMBED_DIM,
+        "n_heads": N_HEADS,
+        "n_layers": N_LAYERS,
+        "ff_dim": FF_DIM,
+        "param_dtype": PARAM_DTYPE,
+    }
+
+
+def file_fingerprint(path: str) -> dict:
+    stat = os.stat(path)
+    return {
+        "path": path,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def dataset_fingerprint() -> dict:
+    paths = [TRAIN_TOKENS_PATH, VAL_TOKENS_PATH]
+    if USE_LOSS_MASK:
+        if TRAIN_MASK_PATH is None or VAL_MASK_PATH is None:
+            raise ValueError("mask paths must be set when USE_LOSS_MASK=True")
+        paths.extend([TRAIN_MASK_PATH, VAL_MASK_PATH])
+
+    return {
+        "val_ratio": VAL_RATIO,
+        "files": [file_fingerprint(path) for path in paths],
+    }
 
 
 def save_checkpoint(model: SolenaV2, metadata: dict | None = None) -> None:
@@ -230,9 +270,25 @@ def save_checkpoint(model: SolenaV2, metadata: dict | None = None) -> None:
 
 def load_checkpoint(model: SolenaV2) -> tuple[SolenaV2, dict, bool]:
     if RESUME and os.path.exists(LOAD_CHECKPOINT_PATH):
+        metadata = load_checkpoint_metadata(LOAD_CHECKPOINT_PATH) if LOAD_CHECKPOINT_PATH == CHECKPOINT_PATH else {}
+        saved_signature = metadata.get("model_signature")
+        if saved_signature is not None and saved_signature != model_signature():
+            raise RuntimeError(
+                "checkpoint model config does not match current config; "
+                f"checkpoint={saved_signature}, current={model_signature()}. "
+                "Use the matching config or delete/rename the checkpoint."
+            )
+
         print(f"Loading checkpoint from {LOAD_CHECKPOINT_PATH}")
         print(f"Saving checkpoints to {CHECKPOINT_PATH}")
-        return eqx.tree_deserialise_leaves(LOAD_CHECKPOINT_PATH, model), load_checkpoint_metadata(), True
+        try:
+            loaded = eqx.tree_deserialise_leaves(LOAD_CHECKPOINT_PATH, model)
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to load checkpoint {LOAD_CHECKPOINT_PATH}; "
+                "the checkpoint probably does not match the active model config"
+            ) from exc
+        return loaded, metadata, True
     if TRAIN_STAGE == "sft":
         raise FileNotFoundError(f"SFT needs a base or SFT checkpoint to load: {LOAD_CHECKPOINT_PATH}")
     return model, {}, False
@@ -251,10 +307,17 @@ def main() -> None:
         f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | optimizer={OPTIMIZER} | "
         f"dtype={PARAM_DTYPE} | remat={USE_REMAT} | "
         f"logit_chunk={min(LOGIT_CHUNK_SIZE, MAX_EFFECTIVE_LOGIT_CHUNK_SIZE)} "
-        f"(config={LOGIT_CHUNK_SIZE}) | attn_scores={attention_score_mb():.1f}MB"
+        f"(config={LOGIT_CHUNK_SIZE}) | attn_matrix={attention_matrix_mb():.1f}MB"
     )
 
     dataset = load_dataset()
+    current_dataset_fingerprint = dataset_fingerprint()
+    total_tokens = len(dataset.train) + len(dataset.val)
+    print(
+        f"dataset | train_tokens={len(dataset.train)} | val_tokens={len(dataset.val)} "
+        f"| val_share={len(dataset.val) / total_tokens:.2%}"
+    )
+
     key = jax.random.PRNGKey(0)
     model_key, train_key = jax.random.split(key)
 
@@ -264,6 +327,16 @@ def main() -> None:
 
     best_checkpoint_score = float(checkpoint_metadata.get("best_score", float("inf")))
     best_checkpoint_metric_name = checkpoint_metadata.get("metric_name", "val_loss")
+    saved_dataset_fingerprint = checkpoint_metadata.get("dataset_fingerprint")
+    dataset_changed = (
+        resumed_from_checkpoint
+        and saved_dataset_fingerprint is not None
+        and saved_dataset_fingerprint != current_dataset_fingerprint
+    )
+    if dataset_changed:
+        print("Dataset fingerprint changed since checkpoint metadata; reseeding best checkpoint score.")
+        best_checkpoint_score = float("inf")
+
     needs_best_score_seed = resumed_from_checkpoint and SAVE_BEST_ONLY and not math.isfinite(best_checkpoint_score)
 
     if USE_DATA_PARALLEL:
@@ -292,6 +365,7 @@ def main() -> None:
     batches_per_epoch = MAX_BATCHES
     if batches_per_epoch is None:
         batches_per_epoch = max(1, len(dataset.train) // (BATCH_SIZE * SEQ_LEN))
+    print(f"batches_per_epoch={batches_per_epoch}")
 
     for epoch in range(1, EPOCHS_PER_RUN + 1):
         running_loss = 0.0
@@ -347,6 +421,14 @@ def main() -> None:
                     "best_score": best_checkpoint_score,
                     "train_loss": train_loss,
                     "val_loss": val_loss,
+                    "model_signature": model_signature(),
+                    "dataset_fingerprint": current_dataset_fingerprint,
+                    "profile": PROFILE,
+                    "train_stage": TRAIN_STAGE,
+                    "optimizer": OPTIMIZER,
+                    "batch_size": BATCH_SIZE,
+                    "per_device_batch_size": PER_DEVICE_BATCH_SIZE,
+                    "num_devices": NUM_DEVICES,
                 },
             )
             checkpoint_status = "saved"

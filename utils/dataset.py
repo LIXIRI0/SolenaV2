@@ -1,9 +1,11 @@
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from config import (
     BATCH_SIZE,
+    DATASET_SEED,
     NUM_DEVICES,
     PER_DEVICE_BATCH_SIZE,
     SEQ_LEN,
@@ -23,11 +25,12 @@ class TokenDataset:
     val_mask: np.ndarray | None = None
     seq_len: int = SEQ_LEN
     batch_size: int = BATCH_SIZE
+    rng: np.random.Generator = field(default_factory=lambda: np.random.default_rng(DATASET_SEED))
 
     def __post_init__(self) -> None:
-        if len(self.train) <= self.seq_len+1:
+        if len(self.train) <= self.seq_len + 1:
             raise ValueError("train token array is too short for SEQ_LEN")
-        if len(self.val) <= self.seq_len+1:
+        if len(self.val) <= self.seq_len + 1:
             raise ValueError("val token array is too short for SEQ_LEN")
         if self.train_mask is not None and len(self.train_mask) != len(self.train):
             raise ValueError("train mask length must match train token array length")
@@ -65,10 +68,15 @@ class TokenDataset:
 
         return x.astype(np.int32), y.astype(np.int32), mask
 
-    def get_batch(self, split: str = "train") -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def get_batch(
+        self,
+        split: str = "train",
+        batch_size: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         data = self.split_data(split)
         data_mask = self.split_mask(split)
-        starts = np.random.randint(0, len(data) - self.seq_len - 1, size=self.batch_size)
+        batch_size = self.batch_size if batch_size is None else batch_size
+        starts = self.rng.integers(0, len(data) - self.seq_len - 1, size=batch_size)
         return self.batch_from_starts(data, starts, data_mask)
 
     def get_train_batch(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -106,12 +114,7 @@ class TokenDataset:
         num_devices: int = NUM_DEVICES,
         per_device_batch_size: int = PER_DEVICE_BATCH_SIZE,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        old_batch_size = self.batch_size
-        self.batch_size = num_devices * per_device_batch_size
-        try:
-            x, y, mask = self.get_batch(split)
-        finally:
-            self.batch_size = old_batch_size
+        x, y, mask = self.get_batch(split, batch_size=num_devices * per_device_batch_size)
 
         x = x.reshape(num_devices, per_device_batch_size, self.seq_len)
         y = y.reshape(num_devices, per_device_batch_size, self.seq_len)
@@ -148,6 +151,8 @@ class TokenDataset:
 
 
 def load_tokens(path: str) -> np.ndarray:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"token file not found: {path}; run training/encodedata.py")
     return np.load(path, mmap_mode="r")
 
 
@@ -156,6 +161,8 @@ def load_mask(path: str | None) -> np.ndarray | None:
         return None
     if path is None:
         raise ValueError("mask path must be set when USE_LOSS_MASK=True")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"mask file not found: {path}; run training/encodedata.py")
     return np.load(path, mmap_mode="r")
 
 
