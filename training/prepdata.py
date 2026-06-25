@@ -14,7 +14,7 @@ sys.path.append(str(ROOT_DIR))
 dotenv.load_dotenv(ROOT_DIR / ".env")
 
 from config import (
-    DATA_PATH,
+    PRETRAIN_DATA_PATH,
     PRETRAIN_CHARS_PER_TOKEN,
     PRETRAIN_HF_TIMEOUT,
     PRETRAIN_MIX,
@@ -311,7 +311,7 @@ def validate_mix() -> None:
         raise ValueError(f"PRETRAIN_MIX keys {mix_names} do not match source names {source_names}")
 
 
-def prepare_data(output_path: str = DATA_PATH) -> None:
+def prepare_data(output_path: str = PRETRAIN_DATA_PATH) -> None:
     validate_mix()
     target_chars = PRETRAIN_TARGET_TOKENS * PRETRAIN_CHARS_PER_TOKEN
     seen_hashes: set[str] = set()

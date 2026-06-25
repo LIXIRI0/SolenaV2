@@ -1,6 +1,7 @@
 import os
 
 PROFILE = "collab_tpu"  # "cpu_dev", "cpu_full", "collab_tpu", "tpu_train"
+TRAIN_STAGE = "sft"     # "pretrain" or "sft"
 
 if PROFILE == "cpu_dev":
     VOCAB_SIZE     = 8000
@@ -72,6 +73,12 @@ if "PER_DEVICE_BATCH_SIZE" not in globals():
     PER_DEVICE_BATCH_SIZE = BATCH_SIZE
 USE_DATA_PARALLEL = NUM_DEVICES > 1
 
+if TRAIN_STAGE == "sft":
+    LR = 2e-5
+    EPOCHS_PER_RUN = 3
+elif TRAIN_STAGE != "pretrain":
+    raise ValueError(f"unknown TRAIN_STAGE: {TRAIN_STAGE}")
+
 GEN_MAX_NEW_TOKENS = 160
 GEN_MIN_NEW_TOKENS = 24
 GEN_TEMPERATURE    = 0.8
@@ -84,7 +91,7 @@ GEN_MAX_BANNED_TOKENS = 128
 GEN_STOP_AFTER_SENTENCE = True
 GEN_SEED           = 0
 GEN_SHOW_FULL_TEXT = False
-GEN_PROMPT_MODE    = "plain"  # "plain" for base pretraining, "chat" after SFT
+GEN_PROMPT_MODE    = "chat" if TRAIN_STAGE == "sft" else "plain"
 GEN_EXIT_COMMANDS  = ("exit", "quit", "q")
 
 PRETRAIN_TARGET_TOKENS = 300_000_000
@@ -102,12 +109,32 @@ PRETRAIN_MIX = {
 DROPOUT = 0.1
 
 ROOT_DIR         = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH        = os.path.join(ROOT_DIR, "data", "raw.txt")
-VAL_PATH         = os.path.join(ROOT_DIR, "data", "val.txt")
-TRAIN_TOKENS_PATH = os.path.join(ROOT_DIR, "data", "train.npy")
-VAL_TOKENS_PATH   = os.path.join(ROOT_DIR, "data", "val.npy")
-CHECKPOINT_PATH  = os.path.join(ROOT_DIR, "checkpoints", "model", "SolenaV2.eqx")
-TOKENIZER_PATH   = os.path.join(ROOT_DIR, "checkpoints", "tokenizer", "solena.model")
+PRETRAIN_DATA_PATH = os.path.join(ROOT_DIR, "data", "raw.txt")
+SFT_DATA_PATH      = os.path.join(ROOT_DIR, "data", "sft_raw.txt")
+
+PRETRAIN_TRAIN_TOKENS_PATH = os.path.join(ROOT_DIR, "data", "train.npy")
+PRETRAIN_VAL_TOKENS_PATH   = os.path.join(ROOT_DIR, "data", "val.npy")
+SFT_TRAIN_TOKENS_PATH      = os.path.join(ROOT_DIR, "data", "sft_train.npy")
+SFT_VAL_TOKENS_PATH        = os.path.join(ROOT_DIR, "data", "sft_val.npy")
+SFT_TRAIN_MASK_PATH        = os.path.join(ROOT_DIR, "data", "sft_train_mask.npy")
+SFT_VAL_MASK_PATH          = os.path.join(ROOT_DIR, "data", "sft_val_mask.npy")
+
+DATA_PATH = SFT_DATA_PATH if TRAIN_STAGE == "sft" else PRETRAIN_DATA_PATH
+TRAIN_TOKENS_PATH = SFT_TRAIN_TOKENS_PATH if TRAIN_STAGE == "sft" else PRETRAIN_TRAIN_TOKENS_PATH
+VAL_TOKENS_PATH = SFT_VAL_TOKENS_PATH if TRAIN_STAGE == "sft" else PRETRAIN_VAL_TOKENS_PATH
+TRAIN_MASK_PATH = SFT_TRAIN_MASK_PATH if TRAIN_STAGE == "sft" else None
+VAL_MASK_PATH = SFT_VAL_MASK_PATH if TRAIN_STAGE == "sft" else None
+DATA_DOCUMENT_MODE = "blankline" if TRAIN_STAGE == "sft" else "line"
+USE_LOSS_MASK = TRAIN_STAGE == "sft"
+
+BASE_CHECKPOINT_PATH = os.path.join(ROOT_DIR, "checkpoints", "model", "SolenaV2.eqx")
+SFT_CHECKPOINT_PATH  = os.path.join(ROOT_DIR, "checkpoints", "model", "SolenaV2-sft.eqx")
+CHECKPOINT_PATH      = SFT_CHECKPOINT_PATH if TRAIN_STAGE == "sft" else BASE_CHECKPOINT_PATH
+LOAD_CHECKPOINT_PATH = CHECKPOINT_PATH
+if TRAIN_STAGE == "sft" and not os.path.exists(LOAD_CHECKPOINT_PATH):
+    LOAD_CHECKPOINT_PATH = BASE_CHECKPOINT_PATH
+
+TOKENIZER_PATH = os.path.join(ROOT_DIR, "checkpoints", "tokenizer", "solena.model")
 
 RESUME         = True
 SAVE_BEST_ONLY = True

@@ -16,6 +16,7 @@ from config import (
     BATCH_SIZE,
     CHECKPOINT_PATH,
     EPOCHS_PER_RUN,
+    LOAD_CHECKPOINT_PATH,
     LR,
     MAX_BATCHES,
     NUM_DEVICES,
@@ -23,6 +24,7 @@ from config import (
     RESUME,
     SAVE_BEST_ONLY,
     SEQ_LEN,
+    TRAIN_STAGE,
     USE_DATA_PARALLEL,
     VAL_BATCHES,
     VOCAB_SIZE,
@@ -32,15 +34,16 @@ from utils.dataset import load_dataset
 from utils import tokenizer
 
 
-def cross_entropy_loss(logits: jax.Array, targets: jax.Array) -> jax.Array:
+def cross_entropy_loss(logits: jax.Array, targets: jax.Array, mask: jax.Array) -> jax.Array:
     loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
-    return jnp.mean(loss)
+    mask = mask.astype(loss.dtype)
+    return jnp.sum(loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
 
 @eqx.filter_value_and_grad
-def loss_fn(model: SolenaV2, x: jax.Array, y: jax.Array, key: jax.Array) -> jax.Array:
+def loss_fn(model: SolenaV2, x: jax.Array, y: jax.Array, mask: jax.Array, key: jax.Array) -> jax.Array:
     logits = model(x, key=key, train=True)
-    return cross_entropy_loss(logits, y)
+    return cross_entropy_loss(logits, y, mask)
 
 
 @eqx.filter_jit
@@ -50,9 +53,10 @@ def train_step(
     optimizer: optax.GradientTransformation,
     x: jax.Array,
     y: jax.Array,
+    mask: jax.Array,
     key: jax.Array,
 ) -> tuple[SolenaV2, optax.OptState, jax.Array]:
-    loss, grads = loss_fn(model, x, y, key)
+    loss, grads = loss_fn(model, x, y, mask, key)
     updates, opt_state = optimizer.update(grads, opt_state, model)
     model = eqx.apply_updates(model, updates)
     return model, opt_state, loss
@@ -65,9 +69,10 @@ def parallel_train_step(
     optimizer: optax.GradientTransformation,
     x: jax.Array,
     y: jax.Array,
+    mask: jax.Array,
     key: jax.Array,
 ) -> tuple[SolenaV2, optax.OptState, jax.Array]:
-    loss, grads = loss_fn(model, x, y, key)
+    loss, grads = loss_fn(model, x, y, mask, key)
     loss = jax.lax.pmean(loss, axis_name="devices")
     grads = jax.lax.pmean(grads, axis_name="devices")
     updates, opt_state = optimizer.update(grads, opt_state, model)
@@ -76,15 +81,15 @@ def parallel_train_step(
 
 
 @eqx.filter_jit
-def eval_step(model: SolenaV2, x: jax.Array, y: jax.Array) -> jax.Array:
+def eval_step(model: SolenaV2, x: jax.Array, y: jax.Array, mask: jax.Array) -> jax.Array:
     logits = model(x, train=False)
-    return cross_entropy_loss(logits, y)
+    return cross_entropy_loss(logits, y, mask)
 
 
 @eqx.filter_pmap(axis_name="devices")
-def parallel_eval_step(model: SolenaV2, x: jax.Array, y: jax.Array) -> jax.Array:
+def parallel_eval_step(model: SolenaV2, x: jax.Array, y: jax.Array, mask: jax.Array) -> jax.Array:
     logits = model(x, train=False)
-    loss = cross_entropy_loss(logits, y)
+    loss = cross_entropy_loss(logits, y, mask)
     return jax.lax.pmean(loss, axis_name="devices")
 
 
@@ -94,8 +99,8 @@ def estimate_val_loss(model: SolenaV2, dataset, batches: int) -> float | None:
 
     losses = []
     for batch_idx in range(batches):
-        vx, vy = dataset.get_val_eval_batch(batch_idx, batches)
-        loss = eval_step(model, jnp.asarray(vx), jnp.asarray(vy))
+        vx, vy, vmask = dataset.get_val_eval_batch(batch_idx, batches)
+        loss = eval_step(model, jnp.asarray(vx), jnp.asarray(vy), jnp.asarray(vmask))
         losses.append(float(loss))
 
     return sum(losses) / len(losses)
@@ -107,8 +112,8 @@ def estimate_parallel_val_loss(model: SolenaV2, dataset, batches: int) -> float 
 
     losses = []
     for batch_idx in range(batches):
-        vx, vy = dataset.get_sharded_val_eval_batch(batch_idx, batches)
-        loss = parallel_eval_step(model, jnp.asarray(vx), jnp.asarray(vy))
+        vx, vy, vmask = dataset.get_sharded_val_eval_batch(batch_idx, batches)
+        loss = parallel_eval_step(model, jnp.asarray(vx), jnp.asarray(vy), jnp.asarray(vmask))
         losses.append(float(jax.device_get(loss[0])))
 
     return sum(losses) / len(losses)
@@ -151,9 +156,12 @@ def save_checkpoint(model: SolenaV2, metadata: dict | None = None) -> None:
 
 
 def load_checkpoint(model: SolenaV2) -> tuple[SolenaV2, dict, bool]:
-    if RESUME and os.path.exists(CHECKPOINT_PATH):
-        print(f"Loading checkpoint from {CHECKPOINT_PATH}")
-        return eqx.tree_deserialise_leaves(CHECKPOINT_PATH, model), load_checkpoint_metadata(), True
+    if RESUME and os.path.exists(LOAD_CHECKPOINT_PATH):
+        print(f"Loading checkpoint from {LOAD_CHECKPOINT_PATH}")
+        print(f"Saving checkpoints to {CHECKPOINT_PATH}")
+        return eqx.tree_deserialise_leaves(LOAD_CHECKPOINT_PATH, model), load_checkpoint_metadata(), True
+    if TRAIN_STAGE == "sft":
+        raise FileNotFoundError(f"SFT needs a base or SFT checkpoint to load: {LOAD_CHECKPOINT_PATH}")
     return model, {}, False
 
 
@@ -209,7 +217,7 @@ def main() -> None:
         for batch_idx in range(1, batches_per_epoch + 1):
             train_key, step_key = jax.random.split(train_key)
             if USE_DATA_PARALLEL:
-                x, y = dataset.get_sharded_train_batch()
+                x, y, mask = dataset.get_sharded_train_batch()
                 step_keys = jax.random.split(step_key, NUM_DEVICES)
                 model, opt_state, loss = parallel_train_step(
                     model,
@@ -217,17 +225,19 @@ def main() -> None:
                     optimizer,
                     jnp.asarray(x),
                     jnp.asarray(y),
+                    jnp.asarray(mask),
                     step_keys,
                 )
                 running_loss += float(jax.device_get(loss[0]))
             else:
-                x, y = dataset.get_train_batch()
+                x, y, mask = dataset.get_train_batch()
                 model, opt_state, loss = train_step(
                     model,
                     opt_state,
                     optimizer,
                     jnp.asarray(x),
                     jnp.asarray(y),
+                    jnp.asarray(mask),
                     step_key,
                 )
                 running_loss += float(loss)

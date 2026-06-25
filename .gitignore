@@ -9,5 +9,6 @@ __pycache__/
 checkpoints/
 samples/
 data/raw.txt
+data/sft_raw.txt
 data/val.txt
 data/*.npy

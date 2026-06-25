@@ -1,27 +1,37 @@
 import os
+import re
 import sys
 import dotenv
 from pathlib import Path
-
-from datasets import load_dataset
-from huggingface_hub import hf_hub_download, list_repo_files
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
 dotenv.load_dotenv(ROOT_DIR / ".env")
 
+from config import PRETRAIN_HF_TIMEOUT, SFT_DATA_PATH
+
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = str(PRETRAIN_HF_TIMEOUT)
+os.environ["HF_HUB_ETAG_TIMEOUT"] = str(PRETRAIN_HF_TIMEOUT)
+
+from datasets import load_dataset
+from huggingface_hub import hf_hub_download, list_repo_files
+
 DATASET_NAME = "HuggingFaceH4/ultrachat_200k"
 DEFAULT_SPLIT = "train_sft"
 DEFAULT_LIMIT = None
 FACE_TOKEN = os.getenv("FACE_TOKEN")
-SFT_DATA_PATH = str(ROOT_DIR / "data" / "sft_raw.txt")
+WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalize_message(text: str) -> str:
+    return WHITESPACE_RE.sub(" ", text).strip()
 
 
 def format_messages(messages: list[dict[str, str]]) -> str:
     lines = []
     for message in messages:
         role = message.get("role")
-        content = message.get("content", "").strip()
+        content = normalize_message(message.get("content", ""))
         if not content:
             continue
 
@@ -68,14 +78,15 @@ def prepare_data(
     if limit is not None:
         dataset = dataset.select(range(min(limit, len(dataset))))
 
-    texts = [format_messages(example["messages"]) for example in dataset]
-
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    written = 0
     with open(output_path, "w", encoding="utf-8") as f:
-        f.write("\n\n".join(texts))
-        f.write("\n")
+        for example in dataset:
+            f.write(format_messages(example["messages"]))
+            f.write("\n\n")
+            written += 1
 
-    print(f"Wrote {len(texts)} conversations to {output_path}")
+    print(f"Wrote {written} conversations to {output_path}")
 
 
 if __name__ == "__main__":
