@@ -1,3 +1,4 @@
+import hashlib
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from utils import tokenizer
 VAL_RATIO = 0.05
 COPY_CHUNK_SIZE = 1_000_000
 PROGRESS_LINES = 10_000
+SPLIT_HASH_SEED = "solena-v2-split-v1"
 
 
 def token_dtype() -> np.dtype:
@@ -87,32 +89,68 @@ def assistant_loss_mask(ids: list[int]) -> list[int]:
     return mask
 
 
-def write_streamed_tokens(temp_path: Path, mask_temp_path: Path | None, dtype: np.dtype) -> int:
-    token_count = 0
+def use_val_split(text: str) -> bool:
+    digest = hashlib.blake2b(
+        f"{SPLIT_HASH_SEED}\0{text}".encode("utf-8"),
+        digest_size=8,
+    ).digest()
+    bucket = int.from_bytes(digest, "big") / 2**64
+    return bucket < VAL_RATIO
+
+
+def write_ids(dst, mask_dst, ids: list[int], dtype: np.dtype) -> int:
+    arr = np.asarray(ids, dtype=dtype)
+    arr.tofile(dst)
+
+    if mask_dst is not None:
+        mask = np.asarray(assistant_loss_mask(ids), dtype=np.uint8)
+        mask.tofile(mask_dst)
+
+    return len(arr)
+
+
+def write_streamed_split_tokens(
+    train_temp_path: Path,
+    val_temp_path: Path,
+    train_mask_temp_path: Path | None,
+    val_mask_temp_path: Path | None,
+    dtype: np.dtype,
+) -> dict[str, int]:
+    stats = {
+        "train_docs": 0,
+        "val_docs": 0,
+        "train_tokens": 0,
+        "val_tokens": 0,
+    }
     eos = tokenizer.eos_id()
 
-    with open(temp_path, "wb") as dst:
-        mask_dst = open(mask_temp_path, "wb") if mask_temp_path is not None else None
+    with open(train_temp_path, "wb") as train_dst, open(val_temp_path, "wb") as val_dst:
+        train_mask_dst = open(train_mask_temp_path, "wb") if train_mask_temp_path is not None else None
+        val_mask_dst = open(val_mask_temp_path, "wb") if val_mask_temp_path is not None else None
         try:
             for doc_idx, text in enumerate(iter_documents(), start=1):
                 ids = tokenizer.encode(text)
                 if ids:
                     ids = ids + [eos]
-                    arr = np.asarray(ids, dtype=dtype)
-                    arr.tofile(dst)
-                    token_count += len(arr)
-
-                    if mask_dst is not None:
-                        mask = np.asarray(assistant_loss_mask(ids), dtype=np.uint8)
-                        mask.tofile(mask_dst)
+                    if use_val_split(text):
+                        stats["val_tokens"] += write_ids(val_dst, val_mask_dst, ids, dtype)
+                        stats["val_docs"] += 1
+                    else:
+                        stats["train_tokens"] += write_ids(train_dst, train_mask_dst, ids, dtype)
+                        stats["train_docs"] += 1
 
                 if doc_idx % PROGRESS_LINES == 0:
-                    print(f"encoded {doc_idx} documents | {token_count} tokens")
+                    print(
+                        f"encoded {doc_idx} documents | "
+                        f"train={stats['train_tokens']} tokens | val={stats['val_tokens']} tokens"
+                    )
         finally:
-            if mask_dst is not None:
-                mask_dst.close()
+            if train_mask_dst is not None:
+                train_mask_dst.close()
+            if val_mask_dst is not None:
+                val_mask_dst.close()
 
-    return token_count
+    return stats
 
 
 def copy_memmap(src: np.memmap, dst_path: str, start: int, end: int, dtype: np.dtype) -> None:
@@ -123,14 +161,10 @@ def copy_memmap(src: np.memmap, dst_path: str, start: int, end: int, dtype: np.d
     out.flush()
 
 
-def copy_mask_files(mask_temp_path: Path, token_count: int, split_idx: int) -> None:
-    if TRAIN_MASK_PATH is None or VAL_MASK_PATH is None:
-        raise ValueError("TRAIN_MASK_PATH and VAL_MASK_PATH must be set when USE_LOSS_MASK=True")
-
-    masks = np.memmap(mask_temp_path, mode="r", dtype=np.uint8, shape=(token_count,))
-    copy_memmap(masks, TRAIN_MASK_PATH, 0, split_idx, np.uint8)
-    copy_memmap(masks, VAL_MASK_PATH, split_idx, token_count, np.uint8)
-    del masks
+def copy_temp_to_npy(temp_path: Path, output_path: str, token_count: int, dtype: np.dtype) -> None:
+    tokens = np.memmap(temp_path, mode="r", dtype=dtype, shape=(token_count,))
+    copy_memmap(tokens, output_path, 0, token_count, dtype)
+    del tokens
 
 
 def encode_data() -> None:
@@ -141,29 +175,50 @@ def encode_data() -> None:
         )
 
     dtype = token_dtype()
-    temp_path = Path(TRAIN_TOKENS_PATH).with_suffix(".tokens.tmp")
-    mask_temp_path = Path(TRAIN_TOKENS_PATH).with_suffix(".mask.tmp") if USE_LOSS_MASK else None
+    train_temp_path = Path(TRAIN_TOKENS_PATH).with_suffix(".tokens.tmp")
+    val_temp_path = Path(VAL_TOKENS_PATH).with_suffix(".tokens.tmp")
+    train_mask_temp_path = Path(TRAIN_TOKENS_PATH).with_suffix(".mask.tmp") if USE_LOSS_MASK else None
+    val_mask_temp_path = Path(VAL_TOKENS_PATH).with_suffix(".mask.tmp") if USE_LOSS_MASK else None
 
     print(f"encoding documents from {DATA_PATH}")
     print(f"writing train tokens to {TRAIN_TOKENS_PATH}")
     print(f"writing val tokens to {VAL_TOKENS_PATH}")
-    token_count = write_streamed_tokens(temp_path, mask_temp_path, dtype)
-    split_idx = int(token_count * (1 - VAL_RATIO))
+    stats = write_streamed_split_tokens(
+        train_temp_path,
+        val_temp_path,
+        train_mask_temp_path,
+        val_mask_temp_path,
+        dtype,
+    )
 
-    tokens = np.memmap(temp_path, mode="r", dtype=dtype, shape=(token_count,))
-    copy_memmap(tokens, TRAIN_TOKENS_PATH, 0, split_idx, dtype)
-    copy_memmap(tokens, VAL_TOKENS_PATH, split_idx, token_count, dtype)
-    del tokens
-    temp_path.unlink(missing_ok=True)
+    train_tokens = stats["train_tokens"]
+    val_tokens = stats["val_tokens"]
+    if train_tokens == 0 or val_tokens == 0:
+        raise ValueError(
+            f"empty split after document hash split: train={train_tokens}, val={val_tokens}; "
+            "use more source documents or adjust VAL_RATIO"
+        )
 
-    if mask_temp_path is not None:
-        copy_mask_files(mask_temp_path, token_count, split_idx)
-        mask_temp_path.unlink(missing_ok=True)
-        print(f"train_mask: ({split_idx},)")
-        print(f"val_mask: ({token_count - split_idx},)")
+    copy_temp_to_npy(train_temp_path, TRAIN_TOKENS_PATH, train_tokens, dtype)
+    copy_temp_to_npy(val_temp_path, VAL_TOKENS_PATH, val_tokens, dtype)
+    train_temp_path.unlink(missing_ok=True)
+    val_temp_path.unlink(missing_ok=True)
 
-    print(f"train: ({split_idx},)")
-    print(f"val: ({token_count - split_idx},)")
+    if train_mask_temp_path is not None and val_mask_temp_path is not None:
+        if TRAIN_MASK_PATH is None or VAL_MASK_PATH is None:
+            raise ValueError("TRAIN_MASK_PATH and VAL_MASK_PATH must be set when USE_LOSS_MASK=True")
+
+        copy_temp_to_npy(train_mask_temp_path, TRAIN_MASK_PATH, train_tokens, np.uint8)
+        copy_temp_to_npy(val_mask_temp_path, VAL_MASK_PATH, val_tokens, np.uint8)
+        train_mask_temp_path.unlink(missing_ok=True)
+        val_mask_temp_path.unlink(missing_ok=True)
+        print(f"train_mask: ({train_tokens},)")
+        print(f"val_mask: ({val_tokens},)")
+
+    total_tokens = train_tokens + val_tokens
+    val_share = val_tokens / total_tokens
+    print(f"train: ({train_tokens},) docs={stats['train_docs']}")
+    print(f"val: ({val_tokens},) docs={stats['val_docs']} share={val_share:.2%}")
 
 
 if __name__ == "__main__":
