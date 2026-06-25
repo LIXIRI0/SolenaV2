@@ -1,7 +1,7 @@
 import os
 
 PROFILE = "collab_tpu"  # "cpu_dev", "cpu_full", "collab_tpu", "tpu_train"
-TRAIN_STAGE = "sft"     # "pretrain" or "sft"
+TRAIN_STAGE = "pretrain"     # "pretrain" or "sft"
 
 if PROFILE == "cpu_dev":
     VOCAB_SIZE     = 8000
@@ -91,7 +91,7 @@ GEN_MAX_BANNED_TOKENS = 128
 GEN_STOP_AFTER_SENTENCE = True
 GEN_SEED           = 0
 GEN_SHOW_FULL_TEXT = False
-GEN_PROMPT_MODE    = "chat" if TRAIN_STAGE == "sft" else "plain"
+GEN_PROMPT_MODE    = "plain" if TRAIN_STAGE == "sft" else "plain"
 GEN_EXIT_COMMANDS  = ("exit", "quit", "q")
 
 PRETRAIN_TARGET_TOKENS = 300_000_000
