@@ -45,6 +45,11 @@ from utils import tokenizer
 MAX_EFFECTIVE_LOGIT_CHUNK_SIZE = 64
 
 
+def attention_score_mb() -> float:
+    dtype_bytes = 2 if PARAM_DTYPE == "bfloat16" else 4
+    return N_HEADS * SEQ_LEN * SEQ_LEN * dtype_bytes / (1024 * 1024)
+
+
 def cross_entropy_loss(logits: jax.Array, targets: jax.Array, mask: jax.Array) -> jax.Array:
     loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
     mask = mask.astype(loss.dtype)
@@ -246,7 +251,7 @@ def main() -> None:
         f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | optimizer={OPTIMIZER} | "
         f"dtype={PARAM_DTYPE} | remat={USE_REMAT} | "
         f"logit_chunk={min(LOGIT_CHUNK_SIZE, MAX_EFFECTIVE_LOGIT_CHUNK_SIZE)} "
-        f"(config={LOGIT_CHUNK_SIZE})"
+        f"(config={LOGIT_CHUNK_SIZE}) | attn_scores={attention_score_mb():.1f}MB"
     )
 
     dataset = load_dataset()

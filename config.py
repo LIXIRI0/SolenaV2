@@ -49,12 +49,12 @@ elif PROFILE == "collab_tpu":
 
 elif PROFILE == "kaggle_tpu_8":
     VOCAB_SIZE     = 32000
-    SEQ_LEN        = 1024
+    SEQ_LEN        = 768
     NUM_DEVICES    = 8
     PER_DEVICE_BATCH_SIZE = 1
     BATCH_SIZE     = NUM_DEVICES * PER_DEVICE_BATCH_SIZE
     EMBED_DIM      = 1024
-    N_HEADS        = 16
+    N_HEADS        = 8
     N_LAYERS       = 24
     FF_DIM         = 4096
     LR             = 6e-5
