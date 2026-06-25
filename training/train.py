@@ -15,17 +15,23 @@ sys.path.append(str(ROOT_DIR))
 from config import (
     BATCH_SIZE,
     CHECKPOINT_PATH,
+    EMBED_DIM,
     EPOCHS_PER_RUN,
+    FF_DIM,
     LOAD_CHECKPOINT_PATH,
     LR,
     MAX_BATCHES,
+    N_HEADS,
+    N_LAYERS,
     NUM_DEVICES,
     PER_DEVICE_BATCH_SIZE,
+    PROFILE,
     RESUME,
     SAVE_BEST_ONLY,
     SEQ_LEN,
     TRAIN_STAGE,
     USE_DATA_PARALLEL,
+    USE_REMAT,
     VAL_BATCHES,
     VOCAB_SIZE,
 )
@@ -171,6 +177,12 @@ def main() -> None:
             f"tokenizer vocab size {tokenizer.vocab_size()} does not match config VOCAB_SIZE {VOCAB_SIZE}; "
             "rerun training/train_bpe.py and training/encodedata.py"
         )
+
+    print(
+        f"profile={PROFILE} | stage={TRAIN_STAGE} | seq_len={SEQ_LEN} | batch={BATCH_SIZE} "
+        f"({NUM_DEVICES}x{PER_DEVICE_BATCH_SIZE}) | dim={EMBED_DIM} | heads={N_HEADS} | "
+        f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | remat={USE_REMAT}"
+    )
 
     dataset = load_dataset()
     key = jax.random.PRNGKey(0)

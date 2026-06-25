@@ -3,7 +3,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from config import DROPOUT, EMBED_DIM, FF_DIM, N_HEADS, N_LAYERS, SEQ_LEN, VOCAB_SIZE
+from config import DROPOUT, EMBED_DIM, FF_DIM, N_HEADS, N_LAYERS, SEQ_LEN, USE_REMAT, VOCAB_SIZE
 
 
 def _init_weight(key: jax.Array, shape: tuple[int, ...], scale: float = 0.02) -> jax.Array:
@@ -115,6 +115,11 @@ class TransformerBlock(eqx.Module):
         return x
 
 
+@eqx.filter_checkpoint
+def _checkpointed_block(block: TransformerBlock, x: jax.Array, key: jax.Array | None) -> jax.Array:
+    return block(x, key=key, train=True)
+
+
 class SolenaV2(eqx.Module):
     token_embedding: jax.Array
     pos_embedding: jax.Array
@@ -150,7 +155,10 @@ class SolenaV2(eqx.Module):
         block_keys = [None] * len(self.blocks) if key is None else list(jax.random.split(key, len(self.blocks)))
 
         for block, block_key in zip(self.blocks, block_keys):
-            x = block(x, key=block_key, train=train)
+            if train and USE_REMAT:
+                x = _checkpointed_block(block, x, block_key)
+            else:
+                x = block(x, key=block_key, train=train)
 
         x = self.ln_f(x)
         return x @ self.token_embedding.T

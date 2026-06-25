@@ -1,6 +1,6 @@
 import os
 
-PROFILE = "collab_tpu"  # "cpu_dev", "cpu_full", "collab_tpu", "tpu_train"
+PROFILE = "kaggle_tpu_8"  # "cpu_dev", "cpu_full", "collab_tpu", "kaggle_tpu_8", "tpu_train"
 TRAIN_STAGE = "pretrain"     # "pretrain" or "sft"
 
 if PROFILE == "cpu_dev":
@@ -47,6 +47,22 @@ elif PROFILE == "collab_tpu":
     EPOCHS_PER_RUN = 10
     MAX_EPOCHS     = None
 
+elif PROFILE == "kaggle_tpu_8":
+    VOCAB_SIZE     = 32000
+    SEQ_LEN        = 1024
+    NUM_DEVICES    = 8
+    PER_DEVICE_BATCH_SIZE = 1
+    BATCH_SIZE     = NUM_DEVICES * PER_DEVICE_BATCH_SIZE
+    EMBED_DIM      = 1024
+    N_HEADS        = 16
+    N_LAYERS       = 24
+    FF_DIM         = 4096
+    LR             = 6e-5
+    MAX_BATCHES    = 12_000
+    VAL_BATCHES    = 80
+    EPOCHS_PER_RUN = 20
+    MAX_EPOCHS     = None
+
 elif PROFILE == "tpu_train":
     VOCAB_SIZE     = 32000
     SEQ_LEN        = 1024
@@ -72,6 +88,7 @@ if "NUM_DEVICES" not in globals():
 if "PER_DEVICE_BATCH_SIZE" not in globals():
     PER_DEVICE_BATCH_SIZE = BATCH_SIZE
 USE_DATA_PARALLEL = NUM_DEVICES > 1
+USE_REMAT = PROFILE in ("kaggle_tpu_8", "tpu_train")
 
 if TRAIN_STAGE == "sft":
     LR = 1e-5
@@ -91,10 +108,10 @@ GEN_MAX_BANNED_TOKENS = 128
 GEN_STOP_AFTER_SENTENCE = True
 GEN_SEED           = 0
 GEN_SHOW_FULL_TEXT = False
-GEN_PROMPT_MODE    = "plain" if TRAIN_STAGE == "sft" else "plain"
+GEN_PROMPT_MODE    = "chat" if TRAIN_STAGE == "sft" else "plain"
 GEN_EXIT_COMMANDS  = ("exit", "quit", "q")
 
-PRETRAIN_TARGET_TOKENS = 300_000_000
+PRETRAIN_TARGET_TOKENS = 1_000_000_000
 PRETRAIN_CHARS_PER_TOKEN = 4
 PRETRAIN_SEED = 42
 PRETRAIN_HF_TIMEOUT = 60
