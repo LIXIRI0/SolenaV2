@@ -40,6 +40,8 @@ from models.SolenaV2 import SolenaV2
 from utils.dataset import load_dataset
 from utils import tokenizer
 
+MAX_EFFECTIVE_LOGIT_CHUNK_SIZE = 64
+
 
 def cross_entropy_loss(logits: jax.Array, targets: jax.Array, mask: jax.Array) -> jax.Array:
     loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
@@ -54,7 +56,7 @@ def chunked_hidden_cross_entropy_loss(
     mask: jax.Array,
 ) -> jax.Array:
     seq_len = hidden.shape[1]
-    chunk_size = min(LOGIT_CHUNK_SIZE, seq_len)
+    chunk_size = min(LOGIT_CHUNK_SIZE, MAX_EFFECTIVE_LOGIT_CHUNK_SIZE, seq_len)
     if seq_len % chunk_size != 0:
         pad = chunk_size - (seq_len % chunk_size)
         hidden = jnp.pad(hidden, ((0, 0), (0, pad), (0, 0)))
@@ -225,7 +227,8 @@ def main() -> None:
         f"profile={PROFILE} | stage={TRAIN_STAGE} | seq_len={SEQ_LEN} | batch={BATCH_SIZE} "
         f"({NUM_DEVICES}x{PER_DEVICE_BATCH_SIZE}) | dim={EMBED_DIM} | heads={N_HEADS} | "
         f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | remat={USE_REMAT} | "
-        f"logit_chunk={LOGIT_CHUNK_SIZE}"
+        f"logit_chunk={min(LOGIT_CHUNK_SIZE, MAX_EFFECTIVE_LOGIT_CHUNK_SIZE)} "
+        f"(config={LOGIT_CHUNK_SIZE})"
     )
 
     dataset = load_dataset()
