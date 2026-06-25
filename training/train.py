@@ -53,16 +53,38 @@ def chunked_hidden_cross_entropy_loss(
     targets: jax.Array,
     mask: jax.Array,
 ) -> jax.Array:
-    total_loss = jnp.asarray(0.0, dtype=hidden.dtype)
-    total_weight = jnp.asarray(0.0, dtype=hidden.dtype)
+    seq_len = hidden.shape[1]
+    chunk_size = min(LOGIT_CHUNK_SIZE, seq_len)
+    if seq_len % chunk_size != 0:
+        pad = chunk_size - (seq_len % chunk_size)
+        hidden = jnp.pad(hidden, ((0, 0), (0, pad), (0, 0)))
+        targets = jnp.pad(targets, ((0, 0), (0, pad)))
+        mask = jnp.pad(mask, ((0, 0), (0, pad)))
 
-    for start in range(0, hidden.shape[1], LOGIT_CHUNK_SIZE):
-        end = min(start + LOGIT_CHUNK_SIZE, hidden.shape[1])
-        logits = hidden[:, start:end] @ model.token_embedding.T
-        loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets[:, start:end])
-        weights = mask[:, start:end].astype(loss.dtype)
+    num_chunks = hidden.shape[1] // chunk_size
+    hidden_chunks = hidden.reshape(hidden.shape[0], num_chunks, chunk_size, hidden.shape[2])
+    target_chunks = targets.reshape(targets.shape[0], num_chunks, chunk_size)
+    mask_chunks = mask.reshape(mask.shape[0], num_chunks, chunk_size)
+
+    hidden_chunks = jnp.swapaxes(hidden_chunks, 0, 1)
+    target_chunks = jnp.swapaxes(target_chunks, 0, 1)
+    mask_chunks = jnp.swapaxes(mask_chunks, 0, 1)
+
+    def chunk_loss(carry, xs):
+        total_loss, total_weight = carry
+        hidden_chunk, target_chunk, mask_chunk = xs
+        logits = hidden_chunk @ model.token_embedding.T
+        loss = optax.softmax_cross_entropy_with_integer_labels(logits, target_chunk)
+        weights = mask_chunk.astype(loss.dtype)
         total_loss = total_loss + jnp.sum(loss * weights)
         total_weight = total_weight + jnp.sum(weights)
+        return (total_loss, total_weight), None
+
+    (total_loss, total_weight), _ = jax.lax.scan(
+        chunk_loss,
+        (jnp.asarray(0.0, dtype=hidden.dtype), jnp.asarray(0.0, dtype=hidden.dtype)),
+        (hidden_chunks, target_chunks, mask_chunks),
+    )
 
     return total_loss / jnp.maximum(total_weight, 1.0)
 

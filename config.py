@@ -89,7 +89,7 @@ if "PER_DEVICE_BATCH_SIZE" not in globals():
     PER_DEVICE_BATCH_SIZE = BATCH_SIZE
 USE_DATA_PARALLEL = NUM_DEVICES > 1
 USE_REMAT = PROFILE in ("kaggle_tpu_8", "tpu_train")
-LOGIT_CHUNK_SIZE = 128
+LOGIT_CHUNK_SIZE = 64
 
 if TRAIN_STAGE == "sft":
     LR = 1e-5
