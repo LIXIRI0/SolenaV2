@@ -23,11 +23,7 @@ from config import (
     GEN_TEMPERATURE,
     GEN_TOP_K,
     GEN_TOP_P,
-    GEN_USE_PERSONA_PRIMER,
     SEQ_LEN,
-    SFT_CREATOR_NAME,
-    SFT_PERSONA_NAME,
-    SFT_PERSONA_STYLE,
     VOCAB_SIZE,
 )
 from models.SolenaV2 import SolenaV2
@@ -42,34 +38,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def identity_text() -> str:
-    return (
-        f"I'm {SFT_PERSONA_NAME}, an AI model created by {SFT_CREATOR_NAME}. "
-        f"My style is {SFT_PERSONA_STYLE}."
-    )
-
-
-def persona_primer() -> str:
-    if not GEN_USE_PERSONA_PRIMER:
-        return ""
-
-    turns = [
-        ("Who are you?", f"{identity_text()} I'm here to help with questions, ideas, code, and projects."),
-        ("Who created you?", f"I was created by {SFT_CREATOR_NAME}."),
-        ("Hello", f"Hi, I'm {SFT_PERSONA_NAME}. How can I help?"),
-    ]
-    chunks = []
-    for user, assistant in turns:
-        chunks.append(f"<|user|>\n{user}\n<|assistant|>\n{assistant}\n<|end|>\n")
-    return "".join(chunks)
-
-
 def format_prompt(prompt: str) -> str:
     mode = GEN_PROMPT_MODE.lower()
     if mode == "plain":
         return prompt
     if mode == "chat":
-        return f"{persona_primer()}<|user|>\n{prompt}\n<|assistant|>\n"
+        return f"<|user|>\n{prompt}\n<|assistant|>\n"
     raise ValueError('GEN_PROMPT_MODE must be "plain" or "chat"')
 
 

@@ -92,7 +92,6 @@ GEN_STOP_AFTER_SENTENCE = True
 GEN_SEED           = 0
 GEN_SHOW_FULL_TEXT = False
 GEN_PROMPT_MODE    = "chat" if TRAIN_STAGE == "sft" else "plain"
-GEN_USE_PERSONA_PRIMER = TRAIN_STAGE == "sft"
 GEN_EXIT_COMMANDS  = ("exit", "quit", "q")
 
 PRETRAIN_TARGET_TOKENS = 300_000_000
