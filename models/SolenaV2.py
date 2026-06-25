@@ -146,7 +146,7 @@ class SolenaV2(eqx.Module):
         )
         self.ln_f = LayerNorm(embed_dim)
 
-    def __call__(self, idx: jax.Array, key: jax.Array | None = None, train: bool = False) -> jax.Array:
+    def hidden_states(self, idx: jax.Array, key: jax.Array | None = None, train: bool = False) -> jax.Array:
         _, seq_len = idx.shape
         if seq_len > self.pos_embedding.shape[0]:
             raise ValueError("input sequence is longer than SEQ_LEN")
@@ -160,5 +160,11 @@ class SolenaV2(eqx.Module):
             else:
                 x = block(x, key=block_key, train=train)
 
-        x = self.ln_f(x)
-        return x @ self.token_embedding.T
+        return self.ln_f(x)
+
+    def __call__(self, idx: jax.Array, key: jax.Array | None = None, train: bool = False) -> jax.Array:
+        return self.hidden_states(idx, key=key, train=train) @ self.token_embedding.T
+
+    def logits_at(self, idx: jax.Array, position: jax.Array, key: jax.Array | None = None) -> jax.Array:
+        hidden = self.hidden_states(idx, key=key, train=False)
+        return hidden[:, position] @ self.token_embedding.T

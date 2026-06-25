@@ -19,6 +19,7 @@ from config import (
     EPOCHS_PER_RUN,
     FF_DIM,
     LOAD_CHECKPOINT_PATH,
+    LOGIT_CHUNK_SIZE,
     LR,
     MAX_BATCHES,
     N_HEADS,
@@ -46,10 +47,30 @@ def cross_entropy_loss(logits: jax.Array, targets: jax.Array, mask: jax.Array) -
     return jnp.sum(loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
 
+def chunked_hidden_cross_entropy_loss(
+    model: SolenaV2,
+    hidden: jax.Array,
+    targets: jax.Array,
+    mask: jax.Array,
+) -> jax.Array:
+    total_loss = jnp.asarray(0.0, dtype=hidden.dtype)
+    total_weight = jnp.asarray(0.0, dtype=hidden.dtype)
+
+    for start in range(0, hidden.shape[1], LOGIT_CHUNK_SIZE):
+        end = min(start + LOGIT_CHUNK_SIZE, hidden.shape[1])
+        logits = hidden[:, start:end] @ model.token_embedding.T
+        loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets[:, start:end])
+        weights = mask[:, start:end].astype(loss.dtype)
+        total_loss = total_loss + jnp.sum(loss * weights)
+        total_weight = total_weight + jnp.sum(weights)
+
+    return total_loss / jnp.maximum(total_weight, 1.0)
+
+
 @eqx.filter_value_and_grad
 def loss_fn(model: SolenaV2, x: jax.Array, y: jax.Array, mask: jax.Array, key: jax.Array) -> jax.Array:
-    logits = model(x, key=key, train=True)
-    return cross_entropy_loss(logits, y, mask)
+    hidden = model.hidden_states(x, key=key, train=True)
+    return chunked_hidden_cross_entropy_loss(model, hidden, y, mask)
 
 
 @eqx.filter_jit
@@ -88,14 +109,14 @@ def parallel_train_step(
 
 @eqx.filter_jit
 def eval_step(model: SolenaV2, x: jax.Array, y: jax.Array, mask: jax.Array) -> jax.Array:
-    logits = model(x, train=False)
-    return cross_entropy_loss(logits, y, mask)
+    hidden = model.hidden_states(x, train=False)
+    return chunked_hidden_cross_entropy_loss(model, hidden, y, mask)
 
 
 @eqx.filter_pmap(axis_name="devices")
 def parallel_eval_step(model: SolenaV2, x: jax.Array, y: jax.Array, mask: jax.Array) -> jax.Array:
-    logits = model(x, train=False)
-    loss = cross_entropy_loss(logits, y, mask)
+    hidden = model.hidden_states(x, train=False)
+    loss = chunked_hidden_cross_entropy_loss(model, hidden, y, mask)
     return jax.lax.pmean(loss, axis_name="devices")
 
 
@@ -181,7 +202,8 @@ def main() -> None:
     print(
         f"profile={PROFILE} | stage={TRAIN_STAGE} | seq_len={SEQ_LEN} | batch={BATCH_SIZE} "
         f"({NUM_DEVICES}x{PER_DEVICE_BATCH_SIZE}) | dim={EMBED_DIM} | heads={N_HEADS} | "
-        f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | remat={USE_REMAT}"
+        f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | remat={USE_REMAT} | "
+        f"logit_chunk={LOGIT_CHUNK_SIZE}"
     )
 
     dataset = load_dataset()

@@ -130,7 +130,7 @@ def generate_next_token(
     banned_ids: jax.Array,
     key: jax.Array,
 ) -> jax.Array:
-    logits = model(input_ids, train=False)[0, last_index]
+    logits = model.logits_at(input_ids, last_index)[0]
     logits = apply_repetition_penalty(logits, recent_ids)
     logits = apply_banned_tokens(logits, banned_ids)
     return sample_next_token(logits, key)
