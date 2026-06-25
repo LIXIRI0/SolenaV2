@@ -62,6 +62,8 @@ elif PROFILE == "kaggle_tpu_8":
     VAL_BATCHES    = 80
     EPOCHS_PER_RUN = 20
     MAX_EPOCHS     = None
+    OPTIMIZER      = "adafactor"
+    PARAM_DTYPE    = "bfloat16"
 
 elif PROFILE == "tpu_train":
     VOCAB_SIZE     = 32000
@@ -79,6 +81,8 @@ elif PROFILE == "tpu_train":
     EPOCHS_PER_RUN = 100
     MAX_EPOCHS     = None
     GRAD_ACCUM_STEPS = 4
+    OPTIMIZER      = "adafactor"
+    PARAM_DTYPE    = "bfloat16"
 
 else:
     raise ValueError(f"unknown PROFILE: {PROFILE}")
@@ -87,6 +91,10 @@ if "NUM_DEVICES" not in globals():
     NUM_DEVICES = 1
 if "PER_DEVICE_BATCH_SIZE" not in globals():
     PER_DEVICE_BATCH_SIZE = BATCH_SIZE
+if "OPTIMIZER" not in globals():
+    OPTIMIZER = "adamw"
+if "PARAM_DTYPE" not in globals():
+    PARAM_DTYPE = "float32"
 USE_DATA_PARALLEL = NUM_DEVICES > 1
 USE_REMAT = PROFILE in ("kaggle_tpu_8", "tpu_train")
 LOGIT_CHUNK_SIZE = 64

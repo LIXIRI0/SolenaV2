@@ -25,6 +25,8 @@ from config import (
     N_HEADS,
     N_LAYERS,
     NUM_DEVICES,
+    OPTIMIZER,
+    PARAM_DTYPE,
     PER_DEVICE_BATCH_SIZE,
     PROFILE,
     RESUME,
@@ -75,7 +77,7 @@ def chunked_hidden_cross_entropy_loss(
     def chunk_loss(carry, xs):
         total_loss, total_weight = carry
         hidden_chunk, target_chunk, mask_chunk = xs
-        logits = hidden_chunk @ model.token_embedding.T
+        logits = (hidden_chunk @ model.token_embedding.T).astype(jnp.float32)
         loss = optax.softmax_cross_entropy_with_integer_labels(logits, target_chunk)
         weights = mask_chunk.astype(loss.dtype)
         total_loss = total_loss + jnp.sum(loss * weights)
@@ -84,11 +86,26 @@ def chunked_hidden_cross_entropy_loss(
 
     (total_loss, total_weight), _ = jax.lax.scan(
         chunk_loss,
-        (jnp.asarray(0.0, dtype=hidden.dtype), jnp.asarray(0.0, dtype=hidden.dtype)),
+        (jnp.asarray(0.0, dtype=jnp.float32), jnp.asarray(0.0, dtype=jnp.float32)),
         (hidden_chunks, target_chunks, mask_chunks),
     )
 
     return total_loss / jnp.maximum(total_weight, 1.0)
+
+
+def build_optimizer() -> optax.GradientTransformation:
+    if OPTIMIZER == "adamw":
+        return optax.adamw(LR)
+    if OPTIMIZER == "adafactor":
+        return optax.adafactor(
+            learning_rate=LR,
+            multiply_by_parameter_scale=False,
+            clipping_threshold=1.0,
+            momentum=None,
+            weight_decay_rate=0.0,
+            factored=True,
+        )
+    raise ValueError(f"unknown OPTIMIZER: {OPTIMIZER}")
 
 
 @eqx.filter_value_and_grad
@@ -108,7 +125,7 @@ def train_step(
     key: jax.Array,
 ) -> tuple[SolenaV2, optax.OptState, jax.Array]:
     loss, grads = loss_fn(model, x, y, mask, key)
-    updates, opt_state = optimizer.update(grads, opt_state, model)
+    updates, opt_state = optimizer.update(grads, opt_state, eqx.filter(model, eqx.is_array))
     model = eqx.apply_updates(model, updates)
     return model, opt_state, loss
 
@@ -126,7 +143,7 @@ def parallel_train_step(
     loss, grads = loss_fn(model, x, y, mask, key)
     loss = jax.lax.pmean(loss, axis_name="devices")
     grads = jax.lax.pmean(grads, axis_name="devices")
-    updates, opt_state = optimizer.update(grads, opt_state, model)
+    updates, opt_state = optimizer.update(grads, opt_state, eqx.filter(model, eqx.is_array))
     model = eqx.apply_updates(model, updates)
     return model, opt_state, loss
 
@@ -226,7 +243,8 @@ def main() -> None:
     print(
         f"profile={PROFILE} | stage={TRAIN_STAGE} | seq_len={SEQ_LEN} | batch={BATCH_SIZE} "
         f"({NUM_DEVICES}x{PER_DEVICE_BATCH_SIZE}) | dim={EMBED_DIM} | heads={N_HEADS} | "
-        f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | remat={USE_REMAT} | "
+        f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | optimizer={OPTIMIZER} | "
+        f"dtype={PARAM_DTYPE} | remat={USE_REMAT} | "
         f"logit_chunk={min(LOGIT_CHUNK_SIZE, MAX_EFFECTIVE_LOGIT_CHUNK_SIZE)} "
         f"(config={LOGIT_CHUNK_SIZE})"
     )
@@ -236,7 +254,7 @@ def main() -> None:
     model_key, train_key = jax.random.split(key)
 
     model, checkpoint_metadata, resumed_from_checkpoint = load_checkpoint(SolenaV2(model_key))
-    optimizer = optax.adamw(LR)
+    optimizer = build_optimizer()
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
     best_checkpoint_score = float(checkpoint_metadata.get("best_score", float("inf")))

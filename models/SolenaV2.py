@@ -3,11 +3,19 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from config import DROPOUT, EMBED_DIM, FF_DIM, N_HEADS, N_LAYERS, SEQ_LEN, USE_REMAT, VOCAB_SIZE
+from config import DROPOUT, EMBED_DIM, FF_DIM, N_HEADS, N_LAYERS, PARAM_DTYPE, SEQ_LEN, USE_REMAT, VOCAB_SIZE
+
+
+def _param_dtype():
+    if PARAM_DTYPE == "bfloat16":
+        return jnp.bfloat16
+    if PARAM_DTYPE == "float32":
+        return jnp.float32
+    raise ValueError(f"unknown PARAM_DTYPE: {PARAM_DTYPE}")
 
 
 def _init_weight(key: jax.Array, shape: tuple[int, ...], scale: float = 0.02) -> jax.Array:
-    return jax.random.normal(key, shape) * scale
+    return (jax.random.normal(key, shape) * scale).astype(_param_dtype())
 
 
 def _dropout(x: jax.Array, key: jax.Array | None, rate: float, train: bool) -> jax.Array:
@@ -24,13 +32,17 @@ class LayerNorm(eqx.Module):
     eps: float = 1e-5
 
     def __init__(self, dim: int):
-        self.weight = jnp.ones((dim,))
-        self.bias = jnp.zeros((dim,))
+        self.weight = jnp.ones((dim,), dtype=_param_dtype())
+        self.bias = jnp.zeros((dim,), dtype=_param_dtype())
 
     def __call__(self, x: jax.Array) -> jax.Array:
+        dtype = x.dtype
+        x = x.astype(jnp.float32)
         mean = jnp.mean(x, axis=-1, keepdims=True)
         var = jnp.mean((x - mean) ** 2, axis=-1, keepdims=True)
-        return self.weight * (x - mean) * jax.lax.rsqrt(var + self.eps) + self.bias
+        out = self.weight.astype(jnp.float32) * (x - mean) * jax.lax.rsqrt(var + self.eps)
+        out = out + self.bias.astype(jnp.float32)
+        return out.astype(dtype)
 
 
 class CausalSelfAttention(eqx.Module):
@@ -47,9 +59,9 @@ class CausalSelfAttention(eqx.Module):
 
         qkv_key, out_key = jax.random.split(key)
         self.qkv_w = _init_weight(qkv_key, (embed_dim, 3 * embed_dim))
-        self.qkv_b = jnp.zeros((3 * embed_dim,))
+        self.qkv_b = jnp.zeros((3 * embed_dim,), dtype=_param_dtype())
         self.out_w = _init_weight(out_key, (embed_dim, embed_dim))
-        self.out_b = jnp.zeros((embed_dim,))
+        self.out_b = jnp.zeros((embed_dim,), dtype=_param_dtype())
         self.n_heads = n_heads
         self.dropout = dropout
 
@@ -62,11 +74,11 @@ class CausalSelfAttention(eqx.Module):
         qkv = jnp.transpose(qkv, (2, 0, 3, 1, 4))
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        scores = (q @ jnp.swapaxes(k, -1, -2)) / math.sqrt(head_dim)
+        scores = ((q @ jnp.swapaxes(k, -1, -2)) / math.sqrt(head_dim)).astype(jnp.float32)
         mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=bool))
         scores = jnp.where(mask[None, None, :, :], scores, -jnp.inf)
 
-        weights = jax.nn.softmax(scores, axis=-1)
+        weights = jax.nn.softmax(scores, axis=-1).astype(v.dtype)
         weights = _dropout(weights, key, self.dropout, train)
 
         out = weights @ v
@@ -84,9 +96,9 @@ class MLP(eqx.Module):
     def __init__(self, key: jax.Array, embed_dim: int, ff_dim: int, dropout: float):
         key1, key2 = jax.random.split(key)
         self.w1 = _init_weight(key1, (embed_dim, ff_dim))
-        self.b1 = jnp.zeros((ff_dim,))
+        self.b1 = jnp.zeros((ff_dim,), dtype=_param_dtype())
         self.w2 = _init_weight(key2, (ff_dim, embed_dim))
-        self.b2 = jnp.zeros((embed_dim,))
+        self.b2 = jnp.zeros((embed_dim,), dtype=_param_dtype())
         self.dropout = dropout
 
     def __call__(self, x: jax.Array, key: jax.Array | None = None, train: bool = False) -> jax.Array:

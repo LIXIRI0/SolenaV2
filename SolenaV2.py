@@ -114,6 +114,7 @@ def sample_next_token(logits: jax.Array, key: jax.Array) -> jax.Array:
     if GEN_TEMPERATURE <= 0:
         raise ValueError("GEN_TEMPERATURE must be > 0")
 
+    logits = logits.astype(jnp.float32)
     logits = logits / GEN_TEMPERATURE
     logits = apply_top_k(logits, GEN_TOP_K)
     logits = apply_top_p(logits, GEN_TOP_P)
