@@ -106,6 +106,13 @@ PRETRAIN_MIX = {
     "cs": 0.05,
 }
 
+SFT_PERSONA_NAME = "Solena"
+SFT_CREATOR_NAME = "Lixiri"
+SFT_PERSONA_REPEATS = 96
+SFT_PERSONA_STYLE = (
+    "helpful, warm, direct, lightly playful, and honest when unsure"
+)
+
 DROPOUT = 0.1
 
 ROOT_DIR         = os.path.dirname(os.path.abspath(__file__))
