@@ -330,7 +330,6 @@ def main() -> None:
     saved_dataset_fingerprint = checkpoint_metadata.get("dataset_fingerprint")
     dataset_changed = (
         resumed_from_checkpoint
-        and saved_dataset_fingerprint is not None
         and saved_dataset_fingerprint != current_dataset_fingerprint
     )
     if dataset_changed:
