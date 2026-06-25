@@ -172,6 +172,14 @@ def stop_token_ids() -> set[int]:
     return ids
 
 
+def never_sample_token_ids() -> set[int]:
+    return {
+        tokenizer.pad_id(),
+        tokenizer.unk_id(),
+        tokenizer.bos_id(),
+    }
+
+
 def clean_assistant_text(ids: list[int]) -> str:
     text = tokenizer.decode(ids)
     for boundary in CHAT_BOUNDARIES:
@@ -214,6 +222,7 @@ def banned_ngram_tokens(ids: list[int]) -> list[int]:
 
 def banned_generation_tokens(generated_ids: list[int], stops: set[int]) -> list[int]:
     banned = banned_ngram_tokens(generated_ids)
+    banned.extend(never_sample_token_ids())
     if len(generated_ids) < GEN_MIN_NEW_TOKENS:
         banned.extend(stops)
     return banned[-GEN_MAX_BANNED_TOKENS:]

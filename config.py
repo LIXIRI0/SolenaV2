@@ -109,7 +109,7 @@ PRETRAIN_MIX = {
 
 SFT_PERSONA_NAME = "Solena"
 SFT_CREATOR_NAME = "Lixiri"
-SFT_PERSONA_REPEATS = 96
+SFT_PERSONA_REPEATS = 192
 SFT_PERSONA_STYLE = (
     "helpful, warm, direct, lightly playful, and honest when unsure"
 )
