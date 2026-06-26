@@ -19,6 +19,7 @@ from config import (
     VOCAB_SIZE,
 )
 from utils import tokenizer
+from utils.gcs_cache import sync_encoded_artifacts_to_gcs, sync_encoding_inputs_from_gcs
 
 COPY_CHUNK_SIZE = 1_000_000
 PROGRESS_LINES = 10_000
@@ -176,6 +177,8 @@ def replace_staged_outputs(staged_outputs: list[tuple[Path, str]]) -> None:
 
 
 def encode_data() -> None:
+    sync_encoding_inputs_from_gcs()
+
     if tokenizer.vocab_size() != VOCAB_SIZE:
         raise ValueError(
             f"tokenizer vocab size {tokenizer.vocab_size()} does not match config VOCAB_SIZE {VOCAB_SIZE}; "
@@ -243,6 +246,7 @@ def encode_data() -> None:
     val_share = val_tokens / total_tokens
     print(f"train: ({train_tokens},) docs={stats['train_docs']}")
     print(f"val: ({val_tokens},) docs={stats['val_docs']} share={val_share:.2%}")
+    sync_encoded_artifacts_to_gcs()
 
 
 if __name__ == "__main__":

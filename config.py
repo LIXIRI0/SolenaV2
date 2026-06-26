@@ -1,7 +1,11 @@
 import os
 
-PROFILE = "kaggle_tpu_8"  # "cpu_dev", "cpu_full", "collab_tpu", "kaggle_tpu_8", "tpu_train"
+PROFILE = os.getenv("SOLENA_PROFILE", "trc_tpu_64")  # "cpu_dev", "cpu_full", "collab_tpu", "kaggle_tpu_8", "trc_tpu_64", "tpu_train"
 TRAIN_STAGE = "pretrain"     # "pretrain" or "sft"
+
+TRC_GCS_ROOT = "gs://solena/solena"
+TRC_DATA_DIR = "/tmp/solena-data"
+TRC_CHECKPOINT_DIR = "/tmp/solena-checkpoints"
 
 if PROFILE == "cpu_dev":
     VOCAB_SIZE     = 8000
@@ -65,6 +69,25 @@ elif PROFILE == "kaggle_tpu_8":
     OPTIMIZER      = "adafactor"
     PARAM_DTYPE    = "bfloat16"
 
+elif PROFILE == "trc_tpu_64":
+    VOCAB_SIZE     = 32000
+    SEQ_LEN        = 768
+    NUM_DEVICES    = 64
+    PER_DEVICE_BATCH_SIZE = 16
+    BATCH_SIZE     = NUM_DEVICES * PER_DEVICE_BATCH_SIZE
+    EMBED_DIM      = 1024
+    N_HEADS        = 8
+    N_LAYERS       = 24
+    FF_DIM         = 4096
+    LR             = 1e-4
+    MAX_BATCHES    = None
+    VAL_BATCHES    = 120
+    EPOCHS_PER_RUN = 10
+    MAX_EPOCHS     = None
+    OPTIMIZER      = "adafactor"
+    PARAM_DTYPE    = "bfloat16"
+    USE_MESH       = True
+
 elif PROFILE == "tpu_train":
     VOCAB_SIZE     = 32000
     SEQ_LEN        = 768
@@ -95,10 +118,15 @@ if "OPTIMIZER" not in globals():
     OPTIMIZER = "adamw"
 if "PARAM_DTYPE" not in globals():
     PARAM_DTYPE = "float32"
+if "USE_MESH" not in globals():
+    USE_MESH = False
 USE_DATA_PARALLEL = NUM_DEVICES > 1
-USE_REMAT = PROFILE in ("kaggle_tpu_8", "tpu_train")
+USE_REMAT = PROFILE in ("kaggle_tpu_8", "trc_tpu_64", "tpu_train")
 LOGIT_CHUNK_SIZE = 64
 DATASET_SEED = 1337
+DISTRIBUTED_INIT_TIMEOUT = int(os.getenv("JAX_INIT_TIMEOUT", "600"))
+TRAIN_PREFETCH_BATCHES = int(os.getenv("SOLENA_PREFETCH_BATCHES", "2"))
+TRAIN_LOSS_SYNC_INTERVAL = int(os.getenv("SOLENA_LOSS_SYNC_INTERVAL", "32"))
 
 if TRAIN_STAGE == "sft":
     LR = 1e-5
@@ -145,15 +173,24 @@ SFT_PERSONA_STYLE = (
 DROPOUT = 0.1
 
 ROOT_DIR         = os.path.dirname(os.path.abspath(__file__))
-PRETRAIN_DATA_PATH = os.path.join(ROOT_DIR, "data", "raw.txt")
-SFT_DATA_PATH      = os.path.join(ROOT_DIR, "data", "sft_raw.txt")
+DEFAULT_DATA_DIR = TRC_DATA_DIR if PROFILE == "trc_tpu_64" else os.path.join(ROOT_DIR, "data")
+DEFAULT_CHECKPOINT_DIR = TRC_CHECKPOINT_DIR if PROFILE == "trc_tpu_64" else os.path.join(ROOT_DIR, "checkpoints")
+DEFAULT_GCS_ROOT = TRC_GCS_ROOT if PROFILE == "trc_tpu_64" else ""
 
-PRETRAIN_TRAIN_TOKENS_PATH = os.path.join(ROOT_DIR, "data", "train.npy")
-PRETRAIN_VAL_TOKENS_PATH   = os.path.join(ROOT_DIR, "data", "val.npy")
-SFT_TRAIN_TOKENS_PATH      = os.path.join(ROOT_DIR, "data", "sft_train.npy")
-SFT_VAL_TOKENS_PATH        = os.path.join(ROOT_DIR, "data", "sft_val.npy")
-SFT_TRAIN_MASK_PATH        = os.path.join(ROOT_DIR, "data", "sft_train_mask.npy")
-SFT_VAL_MASK_PATH          = os.path.join(ROOT_DIR, "data", "sft_val_mask.npy")
+DATA_DIR         = os.getenv("SOLENA_DATA_DIR", DEFAULT_DATA_DIR)
+CHECKPOINT_DIR   = os.getenv("SOLENA_CHECKPOINT_DIR", DEFAULT_CHECKPOINT_DIR)
+GCS_ROOT         = os.getenv("SOLENA_GCS_ROOT", DEFAULT_GCS_ROOT).rstrip("/")
+GCS_SYNC_CHECKPOINTS = os.getenv("SOLENA_GCS_SYNC_CHECKPOINTS", "1") != "0"
+
+PRETRAIN_DATA_PATH = os.path.join(DATA_DIR, "raw.txt")
+SFT_DATA_PATH      = os.path.join(DATA_DIR, "sft_raw.txt")
+
+PRETRAIN_TRAIN_TOKENS_PATH = os.path.join(DATA_DIR, "train.npy")
+PRETRAIN_VAL_TOKENS_PATH   = os.path.join(DATA_DIR, "val.npy")
+SFT_TRAIN_TOKENS_PATH      = os.path.join(DATA_DIR, "sft_train.npy")
+SFT_VAL_TOKENS_PATH        = os.path.join(DATA_DIR, "sft_val.npy")
+SFT_TRAIN_MASK_PATH        = os.path.join(DATA_DIR, "sft_train_mask.npy")
+SFT_VAL_MASK_PATH          = os.path.join(DATA_DIR, "sft_val_mask.npy")
 
 DATA_PATH = SFT_DATA_PATH if TRAIN_STAGE == "sft" else PRETRAIN_DATA_PATH
 TRAIN_TOKENS_PATH = SFT_TRAIN_TOKENS_PATH if TRAIN_STAGE == "sft" else PRETRAIN_TRAIN_TOKENS_PATH
@@ -163,14 +200,14 @@ VAL_MASK_PATH = SFT_VAL_MASK_PATH if TRAIN_STAGE == "sft" else None
 DATA_DOCUMENT_MODE = "blankline" if TRAIN_STAGE == "sft" else "line"
 USE_LOSS_MASK = TRAIN_STAGE == "sft"
 
-BASE_CHECKPOINT_PATH = os.path.join(ROOT_DIR, "checkpoints", "model", "SolenaV2.eqx")
-SFT_CHECKPOINT_PATH  = os.path.join(ROOT_DIR, "checkpoints", "model", "SolenaV2-sft.eqx")
+BASE_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, "model", "SolenaV2.eqx")
+SFT_CHECKPOINT_PATH  = os.path.join(CHECKPOINT_DIR, "model", "SolenaV2-sft.eqx")
 CHECKPOINT_PATH      = SFT_CHECKPOINT_PATH if TRAIN_STAGE == "sft" else BASE_CHECKPOINT_PATH
 LOAD_CHECKPOINT_PATH = CHECKPOINT_PATH
 if TRAIN_STAGE == "sft" and not os.path.exists(LOAD_CHECKPOINT_PATH):
     LOAD_CHECKPOINT_PATH = BASE_CHECKPOINT_PATH
 
-TOKENIZER_PATH = os.path.join(ROOT_DIR, "checkpoints", "tokenizer", "solena.model")
+TOKENIZER_PATH = os.path.join(CHECKPOINT_DIR, "tokenizer", "solena.model")
 
 RESUME         = True
 SAVE_BEST_ONLY = True
@@ -188,6 +225,10 @@ def validate_config() -> None:
         raise ValueError("BATCH_SIZE must equal NUM_DEVICES * PER_DEVICE_BATCH_SIZE")
     if LOGIT_CHUNK_SIZE <= 0:
         raise ValueError("LOGIT_CHUNK_SIZE must be positive")
+    if TRAIN_PREFETCH_BATCHES < 0:
+        raise ValueError("TRAIN_PREFETCH_BATCHES must be >= 0")
+    if TRAIN_LOSS_SYNC_INTERVAL <= 0:
+        raise ValueError("TRAIN_LOSS_SYNC_INTERVAL must be positive")
     if not 0 < VAL_RATIO < 1:
         raise ValueError("VAL_RATIO must be between 0 and 1")
     if OPTIMIZER not in {"adamw", "adafactor"}:
@@ -198,7 +239,9 @@ def validate_config() -> None:
         raise ValueError("GEN_TEMPERATURE must be > 0")
     if abs(sum(PRETRAIN_MIX.values()) - 1.0) > 1e-6:
         raise ValueError("PRETRAIN_MIX weights must sum to 1.0")
-    if PROFILE in {"kaggle_tpu_8", "tpu_train"} and attention_matrix_mb() > 14:
+    if USE_MESH and NUM_DEVICES <= 1:
+        raise ValueError("USE_MESH requires NUM_DEVICES > 1")
+    if PROFILE in {"kaggle_tpu_8", "trc_tpu_64", "tpu_train"} and attention_matrix_mb() > 14:
         raise ValueError(
             f"attention score tensor is likely too large for TPU vmem: "
             f"{attention_matrix_mb():.1f}MB; lower SEQ_LEN or N_HEADS"

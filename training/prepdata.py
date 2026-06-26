@@ -28,6 +28,7 @@ os.environ["HF_DATASETS_DOWNLOAD_TIMEOUT"] = str(PRETRAIN_HF_TIMEOUT)
 os.environ["HF_DATASETS_ETAG_TIMEOUT"] = str(PRETRAIN_HF_TIMEOUT)
 
 from datasets import load_dataset
+from utils.gcs_cache import sync_raw_data_to_gcs
 
 FACE_TOKEN = os.getenv("FACE_TOKEN")
 MIN_DOC_CHARS = 200
@@ -356,6 +357,7 @@ def prepare_data(output_path: str = PRETRAIN_DATA_PATH) -> None:
             f"~tokens={approx_tokens} share={share:.2%} "
             f"skipped={stats['skipped']} duplicates={stats['duplicates']}"
         )
+    sync_raw_data_to_gcs()
 
 
 if __name__ == "__main__":

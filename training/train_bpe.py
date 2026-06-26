@@ -8,9 +8,11 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
 
 from config import TOKENIZER_PATH, VOCAB_SIZE, PRETRAIN_DATA_PATH
+from utils.gcs_cache import sync_pretrain_tokenizer_inputs_from_gcs, sync_tokenizer_to_gcs
 
 
 def train_tokenizer():
+    sync_pretrain_tokenizer_inputs_from_gcs()
     os.makedirs(os.path.dirname(TOKENIZER_PATH), exist_ok=True)
     spm.SentencePieceTrainer.train(
         input=PRETRAIN_DATA_PATH,
@@ -24,6 +26,7 @@ def train_tokenizer():
         eos_id=3,
     )
     print(f"Tokenizer trained and saved to {TOKENIZER_PATH}")
+    sync_tokenizer_to_gcs()
 
 if __name__ == "__main__":
     train_tokenizer()

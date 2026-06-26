@@ -105,6 +105,28 @@ class TokenDataset:
         starts = (sample_ids * stride) % max_start
         return self.batch_from_starts(data, starts, data_mask)
 
+    def get_eval_batch_shard(
+        self,
+        split: str,
+        batch_idx: int,
+        num_batches: int,
+        global_batch_size: int,
+        local_batch_size: int,
+        process_index: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if num_batches <= 0:
+            raise ValueError("num_batches must be > 0")
+
+        data = self.split_data(split)
+        data_mask = self.split_mask(split)
+        max_start = len(data) - self.seq_len - 1
+        total_samples = max(1, num_batches * global_batch_size)
+        stride = max(1, max_start // total_samples)
+        global_offset = batch_idx * global_batch_size + process_index * local_batch_size
+        sample_ids = global_offset + np.arange(local_batch_size)
+        starts = (sample_ids * stride) % max_start
+        return self.batch_from_starts(data, starts, data_mask)
+
     def get_val_eval_batch(self, batch_idx: int, num_batches: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         return self.get_eval_batch("val", batch_idx, num_batches)
 
