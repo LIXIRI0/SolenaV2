@@ -1,6 +1,6 @@
 import os
 
-PROFILE = os.getenv("SOLENA_PROFILE", "trc_tpu_64")  # "cpu_dev", "cpu_full", "collab_tpu", "kaggle_tpu_8", "trc_tpu_64", "tpu_train"
+PROFILE = os.getenv("SOLENA_PROFILE", "trc_tpu_16")  # "cpu_dev", "cpu_full", "collab_tpu", "kaggle_tpu_8", "trc_tpu_16", "trc_tpu_64", "tpu_train"
 TRAIN_STAGE = "pretrain"     # "pretrain" or "sft"
 
 TRC_GCS_ROOT = "gs://solena/solena"
@@ -88,6 +88,25 @@ elif PROFILE == "trc_tpu_64":
     PARAM_DTYPE    = "bfloat16"
     USE_MESH       = True
 
+elif PROFILE == "trc_tpu_16":
+    VOCAB_SIZE     = 32000
+    SEQ_LEN        = 768
+    NUM_DEVICES    = 16
+    PER_DEVICE_BATCH_SIZE = 16
+    BATCH_SIZE     = NUM_DEVICES * PER_DEVICE_BATCH_SIZE
+    EMBED_DIM      = 1024
+    N_HEADS        = 8
+    N_LAYERS       = 24
+    FF_DIM         = 4096
+    LR             = 1e-4
+    MAX_BATCHES    = None
+    VAL_BATCHES    = 120
+    EPOCHS_PER_RUN = 10
+    MAX_EPOCHS     = None
+    OPTIMIZER      = "adafactor"
+    PARAM_DTYPE    = "bfloat16"
+    USE_MESH       = True
+
 elif PROFILE == "tpu_train":
     VOCAB_SIZE     = 32000
     SEQ_LEN        = 768
@@ -121,7 +140,7 @@ if "PARAM_DTYPE" not in globals():
 if "USE_MESH" not in globals():
     USE_MESH = False
 USE_DATA_PARALLEL = NUM_DEVICES > 1
-USE_REMAT = PROFILE in ("kaggle_tpu_8", "trc_tpu_64", "tpu_train")
+USE_REMAT = PROFILE in ("kaggle_tpu_8", "trc_tpu_16", "trc_tpu_64", "tpu_train")
 LOGIT_CHUNK_SIZE = 64
 DATASET_SEED = 1337
 DISTRIBUTED_INIT_TIMEOUT = int(os.getenv("JAX_INIT_TIMEOUT", "600"))
@@ -173,9 +192,9 @@ SFT_PERSONA_STYLE = (
 DROPOUT = 0.1
 
 ROOT_DIR         = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_DATA_DIR = TRC_DATA_DIR if PROFILE == "trc_tpu_64" else os.path.join(ROOT_DIR, "data")
-DEFAULT_CHECKPOINT_DIR = TRC_CHECKPOINT_DIR if PROFILE == "trc_tpu_64" else os.path.join(ROOT_DIR, "checkpoints")
-DEFAULT_GCS_ROOT = TRC_GCS_ROOT if PROFILE == "trc_tpu_64" else ""
+DEFAULT_DATA_DIR = TRC_DATA_DIR if PROFILE.startswith("trc_tpu_") else os.path.join(ROOT_DIR, "data")
+DEFAULT_CHECKPOINT_DIR = TRC_CHECKPOINT_DIR if PROFILE.startswith("trc_tpu_") else os.path.join(ROOT_DIR, "checkpoints")
+DEFAULT_GCS_ROOT = TRC_GCS_ROOT if PROFILE.startswith("trc_tpu_") else ""
 
 DATA_DIR         = os.getenv("SOLENA_DATA_DIR", DEFAULT_DATA_DIR)
 CHECKPOINT_DIR   = os.getenv("SOLENA_CHECKPOINT_DIR", DEFAULT_CHECKPOINT_DIR)
@@ -241,7 +260,7 @@ def validate_config() -> None:
         raise ValueError("PRETRAIN_MIX weights must sum to 1.0")
     if USE_MESH and NUM_DEVICES <= 1:
         raise ValueError("USE_MESH requires NUM_DEVICES > 1")
-    if PROFILE in {"kaggle_tpu_8", "trc_tpu_64", "tpu_train"} and attention_matrix_mb() > 14:
+    if PROFILE in {"kaggle_tpu_8", "trc_tpu_16", "trc_tpu_64", "tpu_train"} and attention_matrix_mb() > 14:
         raise ValueError(
             f"attention score tensor is likely too large for TPU vmem: "
             f"{attention_matrix_mb():.1f}MB; lower SEQ_LEN or N_HEADS"

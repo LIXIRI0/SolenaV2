@@ -72,7 +72,6 @@ from utils.distributed import (
 from utils.gcs_cache import sync_checkpoint_to_gcs, sync_training_artifacts_from_gcs
 from utils import tokenizer
 
-MAX_EFFECTIVE_LOGIT_CHUNK_SIZE = 64
 Batch = tuple[np.ndarray, np.ndarray, np.ndarray]
 SHUTDOWN_REQUESTED = False
 SHUTDOWN_SIGNAL = ""
@@ -157,7 +156,7 @@ def chunked_hidden_cross_entropy_loss(
     mask: jax.Array,
 ) -> jax.Array:
     seq_len = hidden.shape[1]
-    chunk_size = min(LOGIT_CHUNK_SIZE, MAX_EFFECTIVE_LOGIT_CHUNK_SIZE, seq_len)
+    chunk_size = min(LOGIT_CHUNK_SIZE, seq_len)
     if seq_len % chunk_size != 0:
         pad = chunk_size - (seq_len % chunk_size)
         hidden = jnp.pad(hidden, ((0, 0), (0, pad), (0, 0)))
@@ -523,8 +522,7 @@ def main() -> None:
         f"({NUM_DEVICES}x{PER_DEVICE_BATCH_SIZE}) | dim={EMBED_DIM} | heads={N_HEADS} | "
         f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | optimizer={OPTIMIZER} | "
         f"dtype={PARAM_DTYPE} | remat={USE_REMAT} | "
-        f"logit_chunk={min(LOGIT_CHUNK_SIZE, MAX_EFFECTIVE_LOGIT_CHUNK_SIZE)} "
-        f"(config={LOGIT_CHUNK_SIZE}) | attn_matrix={attention_matrix_mb():.1f}MB"
+        f"logit_chunk={LOGIT_CHUNK_SIZE} | attn_matrix={attention_matrix_mb():.1f}MB"
     )
     if USE_MESH:
         print_once(f"mesh mode | {process_info()}")
