@@ -73,6 +73,7 @@ def is_primary_process() -> bool:
 
 def print_once(*args, **kwargs) -> None:
     if is_primary_process():
+        kwargs.setdefault("flush", True)
         print(*args, **kwargs)
 
 

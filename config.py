@@ -92,7 +92,7 @@ elif PROFILE == "trc_tpu_16":
     VOCAB_SIZE     = 32000
     SEQ_LEN        = 768
     NUM_DEVICES    = 16
-    PER_DEVICE_BATCH_SIZE = 16
+    PER_DEVICE_BATCH_SIZE = 64
     BATCH_SIZE     = NUM_DEVICES * PER_DEVICE_BATCH_SIZE
     EMBED_DIM      = 1024
     N_HEADS        = 8
@@ -141,7 +141,8 @@ if "USE_MESH" not in globals():
     USE_MESH = False
 USE_DATA_PARALLEL = NUM_DEVICES > 1
 USE_REMAT = PROFILE in ("kaggle_tpu_8", "trc_tpu_16", "trc_tpu_64", "tpu_train")
-LOGIT_CHUNK_SIZE = 64
+DEFAULT_LOGIT_CHUNK_SIZE = SEQ_LEN if PROFILE.startswith("trc_tpu_") else 64
+LOGIT_CHUNK_SIZE = int(os.getenv("SOLENA_LOGIT_CHUNK_SIZE", str(DEFAULT_LOGIT_CHUNK_SIZE)))
 DATASET_SEED = 1337
 DISTRIBUTED_INIT_TIMEOUT = int(os.getenv("JAX_INIT_TIMEOUT", "600"))
 TRAIN_PREFETCH_BATCHES = int(os.getenv("SOLENA_PREFETCH_BATCHES", "2"))
