@@ -8,6 +8,7 @@ __pycache__/
 
 checkpoints/
 samples/
+logs/
 data/raw.txt
 data/sft_raw.txt
 data/val.txt

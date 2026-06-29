@@ -9,12 +9,16 @@ from config import (
     CHECKPOINT_PATH,
     DATA_DIR,
     DATA_PATH,
+    GCS_SYNC_LOGS,
     GCS_ROOT,
     GCS_SYNC_CHECKPOINTS,
     LOAD_CHECKPOINT_PATH,
+    LOG_DIR,
     PRETRAIN_DATA_PATH,
+    PROFILE,
     RESUME,
     TOKENIZER_PATH,
+    TRAIN_LOG_PATH,
     TRAIN_STAGE,
     TRAIN_MASK_PATH,
     TRAIN_TOKENS_PATH,
@@ -148,6 +152,10 @@ def copy_to_gcs(local_path: str, remote_uri: str) -> bool:
     return True
 
 
+def _safe_name(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "-" for ch in value)
+
+
 def upload_artifacts(paths: list[str], label: str, print_fn=print) -> None:
     if not gcs_enabled():
         return
@@ -220,6 +228,57 @@ def tokenizer_artifacts() -> list[str]:
     vocab_path = str(Path(TOKENIZER_PATH).with_suffix(".vocab"))
     paths.append(vocab_path)
     return paths
+
+
+def log_artifacts() -> list[str]:
+    candidates: list[Path] = []
+    train_log = Path(TRAIN_LOG_PATH)
+    candidates.append(train_log)
+
+    log_dir = Path(LOG_DIR)
+    if log_dir.exists():
+        candidates.extend(sorted(log_dir.glob("*.log")))
+
+    paths = []
+    seen = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except FileNotFoundError:
+            continue
+        if resolved in seen or not resolved.exists() or resolved.stat().st_size == 0:
+            continue
+        seen.add(resolved)
+        paths.append(str(resolved))
+    return paths
+
+
+def sync_training_logs_to_gcs(
+    process_index: int | None = None,
+    reason: str = "sync",
+    print_fn=print,
+) -> None:
+    if not gcs_enabled() or not GCS_SYNC_LOGS:
+        return
+
+    validate_gcs_root()
+    host = _safe_name(socket.gethostname())
+    process_name = "process-unknown" if process_index is None else f"process-{process_index}"
+    reason = _safe_name(reason)
+    pid = os.getpid()
+
+    for path in log_artifacts():
+        filename = _safe_name(Path(path).name)
+        remote = gcs_join(
+            GCS_ROOT,
+            "logs",
+            TRAIN_STAGE,
+            PROFILE,
+            host,
+            f"{process_name}-{pid}-{reason}-{filename}",
+        )
+        if copy_to_gcs(path, remote):
+            print_fn(f"gcs logs | uploaded | {path} -> {remote}")
 
 
 def sync_encoded_artifacts_to_gcs(print_fn=print) -> None:

@@ -141,7 +141,22 @@ if "USE_MESH" not in globals():
     USE_MESH = False
 USE_DATA_PARALLEL = NUM_DEVICES > 1
 USE_REMAT = PROFILE in ("kaggle_tpu_8", "trc_tpu_16", "trc_tpu_64", "tpu_train")
-DEFAULT_LOGIT_CHUNK_SIZE = SEQ_LEN if PROFILE.startswith("trc_tpu_") else 64
+
+
+def default_logit_chunk_size() -> int:
+    if not PROFILE.startswith("trc_tpu_"):
+        return 64
+
+    target_mb = int(os.getenv("SOLENA_LOGIT_CHUNK_TARGET_MB", "2048"))
+    bytes_per_logit = 4
+    chunk_tokens = (target_mb * 1024 * 1024) // max(1, PER_DEVICE_BATCH_SIZE * VOCAB_SIZE * bytes_per_logit)
+    chunk_tokens = max(64, min(SEQ_LEN, int(chunk_tokens)))
+    if chunk_tokens == SEQ_LEN:
+        return chunk_tokens
+    return max(64, (chunk_tokens // 64) * 64)
+
+
+DEFAULT_LOGIT_CHUNK_SIZE = default_logit_chunk_size()
 LOGIT_CHUNK_SIZE = int(os.getenv("SOLENA_LOGIT_CHUNK_SIZE", str(DEFAULT_LOGIT_CHUNK_SIZE)))
 DATASET_SEED = 1337
 DISTRIBUTED_INIT_TIMEOUT = int(os.getenv("JAX_INIT_TIMEOUT", "600"))
@@ -199,8 +214,11 @@ DEFAULT_GCS_ROOT = TRC_GCS_ROOT if PROFILE.startswith("trc_tpu_") else ""
 
 DATA_DIR         = os.getenv("SOLENA_DATA_DIR", DEFAULT_DATA_DIR)
 CHECKPOINT_DIR   = os.getenv("SOLENA_CHECKPOINT_DIR", DEFAULT_CHECKPOINT_DIR)
+LOG_DIR          = os.getenv("SOLENA_LOG_DIR", os.path.join(ROOT_DIR, "logs"))
+TRAIN_LOG_PATH   = os.getenv("SOLENA_TRAIN_LOG_PATH", os.path.join(LOG_DIR, "train.log"))
 GCS_ROOT         = os.getenv("SOLENA_GCS_ROOT", DEFAULT_GCS_ROOT).rstrip("/")
 GCS_SYNC_CHECKPOINTS = os.getenv("SOLENA_GCS_SYNC_CHECKPOINTS", "1") != "0"
+GCS_SYNC_LOGS = os.getenv("SOLENA_GCS_SYNC_LOGS", "1") != "0"
 
 PRETRAIN_DATA_PATH = os.path.join(DATA_DIR, "raw.txt")
 SFT_DATA_PATH      = os.path.join(DATA_DIR, "sft_raw.txt")

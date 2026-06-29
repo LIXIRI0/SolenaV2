@@ -9,6 +9,20 @@ import time
 from pathlib import Path
 from collections.abc import Callable
 
+
+def configure_output_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(line_buffering=True, write_through=True)
+        except (OSError, ValueError):
+            pass
+
+
+configure_output_streams()
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -70,6 +84,7 @@ from utils.distributed import (
     replicated_sharding,
 )
 from utils.gcs_cache import sync_checkpoint_to_gcs, sync_training_artifacts_from_gcs
+from utils.gcs_cache import sync_training_logs_to_gcs
 from utils import tokenizer
 
 Batch = tuple[np.ndarray, np.ndarray, np.ndarray]
@@ -141,6 +156,11 @@ def flush_loss_buffer(loss_buffer: list[jax.Array]) -> tuple[float, int]:
 def attention_matrix_mb() -> float:
     dtype_bytes = 2 if PARAM_DTYPE == "bfloat16" else 4
     return N_HEADS * SEQ_LEN * SEQ_LEN * dtype_bytes / (1024 * 1024)
+
+
+def logit_chunk_mb() -> float:
+    chunk_size = min(LOGIT_CHUNK_SIZE, SEQ_LEN)
+    return PER_DEVICE_BATCH_SIZE * chunk_size * VOCAB_SIZE * 4 / (1024 * 1024)
 
 
 def cross_entropy_loss(logits: jax.Array, targets: jax.Array, mask: jax.Array) -> jax.Array:
@@ -361,6 +381,29 @@ def save_checkpoint_metadata(metadata: dict, path: str = CHECKPOINT_PATH) -> Non
     os.replace(temp_path, metadata_path)
 
 
+def current_process_index() -> int | None:
+    if USE_MESH:
+        return jax.process_index()
+    return None
+
+
+def flush_output_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+
+
+def sync_logs_to_gcs(reason: str) -> None:
+    flush_output_streams()
+    sync_training_logs_to_gcs(
+        process_index=current_process_index(),
+        reason=reason,
+        print_fn=lambda message: print(message, flush=True),
+    )
+
+
 def sync_last_completed_checkpoint_to_gcs() -> None:
     if USE_MESH and not is_primary_process():
         return
@@ -371,6 +414,11 @@ def sync_last_completed_checkpoint_to_gcs() -> None:
 
     print_once("shutdown requested; uploading last completed checkpoint to GCS")
     sync_checkpoint_to_gcs(print_once)
+
+
+def sync_shutdown_artifacts_to_gcs() -> None:
+    sync_logs_to_gcs("shutdown")
+    sync_last_completed_checkpoint_to_gcs()
 
 
 def model_signature() -> dict:
@@ -445,10 +493,10 @@ def save_checkpoint(model: SolenaV2, metadata: dict | None = None) -> None:
         multihost_utils.sync_global_devices("solena_checkpoint_start")
 
     try:
-        if USE_MESH and not is_primary_process():
-            return
         if shutdown_requested():
-            sync_last_completed_checkpoint_to_gcs()
+            sync_shutdown_artifacts_to_gcs()
+            return
+        if USE_MESH and not is_primary_process():
             return
 
         os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
@@ -457,7 +505,7 @@ def save_checkpoint(model: SolenaV2, metadata: dict | None = None) -> None:
         eqx.tree_serialise_leaves(temp_path, model)
         if shutdown_requested():
             Path(temp_path).unlink(missing_ok=True)
-            sync_last_completed_checkpoint_to_gcs()
+            sync_shutdown_artifacts_to_gcs()
             return
         os.replace(temp_path, CHECKPOINT_PATH)
         if metadata is not None:
@@ -522,7 +570,8 @@ def main() -> None:
         f"({NUM_DEVICES}x{PER_DEVICE_BATCH_SIZE}) | dim={EMBED_DIM} | heads={N_HEADS} | "
         f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | optimizer={OPTIMIZER} | "
         f"dtype={PARAM_DTYPE} | remat={USE_REMAT} | "
-        f"logit_chunk={LOGIT_CHUNK_SIZE} | attn_matrix={attention_matrix_mb():.1f}MB"
+        f"logit_chunk={LOGIT_CHUNK_SIZE} | logit_chunk_per_chip={logit_chunk_mb():.0f}MB | "
+        f"attn_matrix={attention_matrix_mb():.1f}MB"
     )
     if USE_MESH:
         print_once(f"mesh mode | {process_info()}")
@@ -690,7 +739,7 @@ def main() -> None:
                     break
 
             if shutdown_requested():
-                sync_last_completed_checkpoint_to_gcs()
+                sync_shutdown_artifacts_to_gcs()
                 return
 
             loss_sum, sample_count = flush_loss_buffer(loss_buffer)
@@ -699,7 +748,7 @@ def main() -> None:
             train_loss = running_loss / max(loss_count, 1)
 
             if shutdown_requested():
-                sync_last_completed_checkpoint_to_gcs()
+                sync_shutdown_artifacts_to_gcs()
                 return
 
             if USE_MESH:
@@ -747,6 +796,7 @@ def main() -> None:
                     f"val_loss={val_loss:.4f} | checkpoint={checkpoint_status} | "
                     f"best_{best_checkpoint_metric_name}={best_checkpoint_score:.4f}"
                 )
+            sync_logs_to_gcs(f"epoch-{epoch}")
     finally:
         if train_prefetcher is not None:
             train_prefetcher.stop()
