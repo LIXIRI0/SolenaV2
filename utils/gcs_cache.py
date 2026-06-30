@@ -265,7 +265,6 @@ def sync_training_logs_to_gcs(
     host = _safe_name(socket.gethostname())
     process_name = "process-unknown" if process_index is None else f"process-{process_index}"
     reason = _safe_name(reason)
-    pid = os.getpid()
 
     for path in log_artifacts():
         filename = _safe_name(Path(path).name)
@@ -275,10 +274,10 @@ def sync_training_logs_to_gcs(
             TRAIN_STAGE,
             PROFILE,
             host,
-            f"{process_name}-{pid}-{reason}-{filename}",
+            f"{process_name}-{filename}",
         )
         if copy_to_gcs(path, remote):
-            print_fn(f"gcs logs | uploaded | {path} -> {remote}")
+            print_fn(f"gcs logs | uploaded | {reason} | {path} -> {remote}")
 
 
 def sync_encoded_artifacts_to_gcs(print_fn=print) -> None:

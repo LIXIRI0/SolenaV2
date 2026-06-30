@@ -90,9 +90,9 @@ elif PROFILE == "trc_tpu_64":
 
 elif PROFILE == "trc_tpu_16":
     VOCAB_SIZE     = 32000
-    SEQ_LEN        = 768
+    SEQ_LEN        = 1024
     NUM_DEVICES    = 16
-    PER_DEVICE_BATCH_SIZE = 64
+    PER_DEVICE_BATCH_SIZE = 128
     BATCH_SIZE     = NUM_DEVICES * PER_DEVICE_BATCH_SIZE
     EMBED_DIM      = 1024
     N_HEADS        = 8
@@ -147,7 +147,7 @@ def default_logit_chunk_size() -> int:
     if not PROFILE.startswith("trc_tpu_"):
         return 64
 
-    target_mb = int(os.getenv("SOLENA_LOGIT_CHUNK_TARGET_MB", "2048"))
+    target_mb = int(os.getenv("SOLENA_LOGIT_CHUNK_TARGET_MB", "4096"))
     bytes_per_logit = 4
     chunk_tokens = (target_mb * 1024 * 1024) // max(1, PER_DEVICE_BATCH_SIZE * VOCAB_SIZE * bytes_per_logit)
     chunk_tokens = max(64, min(SEQ_LEN, int(chunk_tokens)))
@@ -247,8 +247,9 @@ if TRAIN_STAGE == "sft" and not os.path.exists(LOAD_CHECKPOINT_PATH):
 
 TOKENIZER_PATH = os.path.join(CHECKPOINT_DIR, "tokenizer", "solena.model")
 
-RESUME         = True
+RESUME         = os.getenv("SOLENA_RESUME", "1") != "0"
 SAVE_BEST_ONLY = True
+MAX_ATTENTION_MATRIX_MB = float(os.getenv("SOLENA_MAX_ATTENTION_MATRIX_MB", "24"))
 
 
 def attention_matrix_mb() -> float:
@@ -279,10 +280,13 @@ def validate_config() -> None:
         raise ValueError("PRETRAIN_MIX weights must sum to 1.0")
     if USE_MESH and NUM_DEVICES <= 1:
         raise ValueError("USE_MESH requires NUM_DEVICES > 1")
-    if PROFILE in {"kaggle_tpu_8", "trc_tpu_16", "trc_tpu_64", "tpu_train"} and attention_matrix_mb() > 14:
+    if (
+        PROFILE in {"kaggle_tpu_8", "trc_tpu_16", "trc_tpu_64", "tpu_train"}
+        and attention_matrix_mb() > MAX_ATTENTION_MATRIX_MB
+    ):
         raise ValueError(
             f"attention score tensor is likely too large for TPU vmem: "
-            f"{attention_matrix_mb():.1f}MB; lower SEQ_LEN or N_HEADS"
+            f"{attention_matrix_mb():.1f}MB; lower SEQ_LEN/N_HEADS or set SOLENA_MAX_ATTENTION_MATRIX_MB"
         )
 
 
