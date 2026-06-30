@@ -163,6 +163,30 @@ def logit_chunk_mb() -> float:
     return PER_DEVICE_BATCH_SIZE * chunk_size * VOCAB_SIZE * 4 / (1024 * 1024)
 
 
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    if minutes:
+        return f"{minutes}m{seconds:02d}s"
+    return f"{seconds}s"
+
+
+def throughput_summary(elapsed_seconds: float, batches: int) -> str:
+    tokens = batches * BATCH_SIZE * SEQ_LEN
+    seconds = max(elapsed_seconds, 1e-9)
+    tokens_per_second = tokens / seconds
+    tokens_per_minute = tokens_per_second * 60
+    return (
+        f"time={format_duration(elapsed_seconds)} | "
+        f"tokens={tokens / 1_000_000:.1f}M | "
+        f"tok/s={tokens_per_second / 1_000_000:.2f}M | "
+        f"tok/min={tokens_per_minute / 1_000_000:.1f}M"
+    )
+
+
 def cross_entropy_loss(logits: jax.Array, targets: jax.Array, mask: jax.Array) -> jax.Array:
     loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
     mask = mask.astype(loss.dtype)
@@ -670,6 +694,7 @@ def main() -> None:
 
     try:
         for epoch in range(1, EPOCHS_PER_RUN + 1):
+            epoch_start_time = time.monotonic()
             running_loss = 0.0
             loss_count = 0
             last_batch_idx = 0
@@ -785,16 +810,21 @@ def main() -> None:
             else:
                 checkpoint_status = "skipped"
 
+            epoch_elapsed = time.monotonic() - epoch_start_time
+            epoch_throughput = throughput_summary(epoch_elapsed, last_batch_idx)
+
             if val_loss is None:
                 print_once(
                     f"epoch {epoch}/{EPOCHS_PER_RUN} | train_loss={train_loss:.4f} | "
-                    f"checkpoint={checkpoint_status} | best_{best_checkpoint_metric_name}={best_checkpoint_score:.4f}"
+                    f"checkpoint={checkpoint_status} | best_{best_checkpoint_metric_name}={best_checkpoint_score:.4f} | "
+                    f"{epoch_throughput}"
                 )
             else:
                 print_once(
                     f"epoch {epoch}/{EPOCHS_PER_RUN} | train_loss={train_loss:.4f} | "
                     f"val_loss={val_loss:.4f} | checkpoint={checkpoint_status} | "
-                    f"best_{best_checkpoint_metric_name}={best_checkpoint_score:.4f}"
+                    f"best_{best_checkpoint_metric_name}={best_checkpoint_score:.4f} | "
+                    f"{epoch_throughput}"
                 )
             sync_logs_to_gcs(f"epoch-{epoch}")
     finally:
