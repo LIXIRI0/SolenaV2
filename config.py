@@ -101,7 +101,7 @@ elif PROFILE == "trc_tpu_16":
     LR             = 1e-4
     MAX_BATCHES    = None
     VAL_BATCHES    = 120
-    EPOCHS_PER_RUN = 10
+    EPOCHS_PER_RUN = 50
     MAX_EPOCHS     = None
     OPTIMIZER      = "adafactor"
     PARAM_DTYPE    = "bfloat16"
