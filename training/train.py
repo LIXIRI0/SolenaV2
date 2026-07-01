@@ -595,7 +595,7 @@ def main() -> None:
         f"profile={PROFILE} | stage={TRAIN_STAGE} | seq_len={SEQ_LEN} | batch={BATCH_SIZE} "
         f"({NUM_DEVICES}x{PER_DEVICE_BATCH_SIZE}) | dim={EMBED_DIM} | heads={N_HEADS} | "
         f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | optimizer={OPTIMIZER} | wd={WEIGHT_DECAY:g} | "
-        f"dtype={PARAM_DTYPE} | remat={USE_REMAT} | "
+        f"resume={RESUME} | dtype={PARAM_DTYPE} | remat={USE_REMAT} | "
         f"logit_chunk={LOGIT_CHUNK_SIZE} | logit_chunk_per_chip={logit_chunk_mb():.0f}MB | "
         f"attn_matrix={attention_matrix_mb():.1f}MB"
     )
