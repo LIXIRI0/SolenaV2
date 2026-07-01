@@ -7,8 +7,12 @@ def configure_generation_runtime() -> None:
     if os.getenv("SOLENA_GEN_SINGLE_TPU", "1") == "0":
         return
 
-    os.environ.setdefault("TPU_PROCESS_BOUNDS", os.getenv("SOLENA_GEN_TPU_PROCESS_BOUNDS", "1,1,4"))
-    os.environ.setdefault("TPU_VISIBLE_CHIPS", os.getenv("SOLENA_GEN_TPU_CHIPS", "0,1,2,3"))
+    visible_chips = os.getenv("SOLENA_GEN_TPU_CHIPS", "0,1,2,3")
+    os.environ.setdefault("TPU_HOST_BOUNDS", os.getenv("SOLENA_GEN_TPU_HOST_BOUNDS", "1,1,1"))
+    os.environ.setdefault("TPU_CHIPS_PER_HOST_BOUNDS", os.getenv("SOLENA_GEN_TPU_CHIPS_PER_HOST_BOUNDS", "2,2,1"))
+    os.environ.setdefault("TPU_PROCESS_BOUNDS", os.getenv("SOLENA_GEN_TPU_PROCESS_BOUNDS", "1,1,1"))
+    os.environ.setdefault("TPU_VISIBLE_CHIPS", visible_chips)
+    os.environ.setdefault("TPU_VISIBLE_DEVICES", visible_chips)
 
 
 configure_generation_runtime()
