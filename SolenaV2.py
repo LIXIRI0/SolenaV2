@@ -2,6 +2,17 @@ import argparse
 import os
 import sys
 
+
+def configure_generation_runtime() -> None:
+    if os.getenv("SOLENA_GEN_SINGLE_TPU", "1") == "0":
+        return
+
+    os.environ.setdefault("TPU_PROCESS_BOUNDS", os.getenv("SOLENA_GEN_TPU_PROCESS_BOUNDS", "1,1,4"))
+    os.environ.setdefault("TPU_VISIBLE_CHIPS", os.getenv("SOLENA_GEN_TPU_CHIPS", "0,1,2,3"))
+
+
+configure_generation_runtime()
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
