@@ -139,6 +139,7 @@ if "PARAM_DTYPE" not in globals():
     PARAM_DTYPE = "float32"
 if "USE_MESH" not in globals():
     USE_MESH = False
+# AdamW-style coefficient. Adafactor converts this to LR * WEIGHT_DECAY internally.
 WEIGHT_DECAY = float(os.getenv("SOLENA_WEIGHT_DECAY", "0.01"))
 USE_DATA_PARALLEL = NUM_DEVICES > 1
 USE_REMAT = PROFILE in ("kaggle_tpu_8", "trc_tpu_16", "trc_tpu_64", "tpu_train")

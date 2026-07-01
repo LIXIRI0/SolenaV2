@@ -236,16 +236,45 @@ def chunked_hidden_cross_entropy_loss(
     return total_loss / jnp.maximum(total_weight, 1.0)
 
 
+WEIGHT_DECAY_PARAM_NAMES = frozenset({"qkv_w", "out_w", "w1", "w2"})
+
+
+def _path_leaf_name(path) -> str:
+    for key in reversed(path):
+        name = getattr(key, "name", None)
+        if name is not None:
+            return str(name)
+    return ""
+
+
+def weight_decay_mask(params):
+    def should_decay(path, leaf) -> bool:
+        shape = getattr(leaf, "shape", ())
+        return len(shape) == 2 and _path_leaf_name(path) in WEIGHT_DECAY_PARAM_NAMES
+
+    return jax.tree_util.tree_map_with_path(should_decay, params)
+
+
+def effective_weight_decay_rate() -> float:
+    if WEIGHT_DECAY <= 0:
+        return 0.0
+    if OPTIMIZER == "adafactor":
+        return LR * WEIGHT_DECAY
+    return WEIGHT_DECAY
+
+
 def build_optimizer() -> optax.GradientTransformation:
+    decay_mask = weight_decay_mask if WEIGHT_DECAY > 0 else None
     if OPTIMIZER == "adamw":
-        return optax.adamw(LR, weight_decay=WEIGHT_DECAY)
+        return optax.adamw(LR, weight_decay=WEIGHT_DECAY, mask=decay_mask)
     if OPTIMIZER == "adafactor":
         return optax.adafactor(
             learning_rate=LR,
             multiply_by_parameter_scale=False,
             clipping_threshold=1.0,
             momentum=None,
-            weight_decay_rate=WEIGHT_DECAY,
+            weight_decay_rate=effective_weight_decay_rate() or None,
+            weight_decay_mask=decay_mask,
             factored=True,
         )
     raise ValueError(f"unknown OPTIMIZER: {OPTIMIZER}")
@@ -502,6 +531,7 @@ def make_checkpoint_metadata(
         "train_stage": TRAIN_STAGE,
         "optimizer": OPTIMIZER,
         "weight_decay": WEIGHT_DECAY,
+        "effective_weight_decay_rate": effective_weight_decay_rate(),
         "batch_size": BATCH_SIZE,
         "per_device_batch_size": PER_DEVICE_BATCH_SIZE,
         "num_devices": NUM_DEVICES,
@@ -594,7 +624,8 @@ def main() -> None:
     print_once(
         f"profile={PROFILE} | stage={TRAIN_STAGE} | seq_len={SEQ_LEN} | batch={BATCH_SIZE} "
         f"({NUM_DEVICES}x{PER_DEVICE_BATCH_SIZE}) | dim={EMBED_DIM} | heads={N_HEADS} | "
-        f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | optimizer={OPTIMIZER} | wd={WEIGHT_DECAY:g} | "
+        f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | optimizer={OPTIMIZER} | "
+        f"wd={WEIGHT_DECAY:g} | wd_effective={effective_weight_decay_rate():g} | "
         f"resume={RESUME} | dtype={PARAM_DTYPE} | remat={USE_REMAT} | "
         f"logit_chunk={LOGIT_CHUNK_SIZE} | logit_chunk_per_chip={logit_chunk_mb():.0f}MB | "
         f"attn_matrix={attention_matrix_mb():.1f}MB"
