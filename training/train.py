@@ -68,6 +68,7 @@ from config import (
     VAL_RATIO,
     VAL_TOKENS_PATH,
     VOCAB_SIZE,
+    WEIGHT_DECAY,
 )
 from models.SolenaV2 import SolenaV2
 from utils.dataset import load_dataset
@@ -237,14 +238,14 @@ def chunked_hidden_cross_entropy_loss(
 
 def build_optimizer() -> optax.GradientTransformation:
     if OPTIMIZER == "adamw":
-        return optax.adamw(LR)
+        return optax.adamw(LR, weight_decay=WEIGHT_DECAY)
     if OPTIMIZER == "adafactor":
         return optax.adafactor(
             learning_rate=LR,
             multiply_by_parameter_scale=False,
             clipping_threshold=1.0,
             momentum=None,
-            weight_decay_rate=0.0,
+            weight_decay_rate=WEIGHT_DECAY,
             factored=True,
         )
     raise ValueError(f"unknown OPTIMIZER: {OPTIMIZER}")
@@ -500,6 +501,7 @@ def make_checkpoint_metadata(
         "profile": PROFILE,
         "train_stage": TRAIN_STAGE,
         "optimizer": OPTIMIZER,
+        "weight_decay": WEIGHT_DECAY,
         "batch_size": BATCH_SIZE,
         "per_device_batch_size": PER_DEVICE_BATCH_SIZE,
         "num_devices": NUM_DEVICES,
@@ -592,7 +594,7 @@ def main() -> None:
     print_once(
         f"profile={PROFILE} | stage={TRAIN_STAGE} | seq_len={SEQ_LEN} | batch={BATCH_SIZE} "
         f"({NUM_DEVICES}x{PER_DEVICE_BATCH_SIZE}) | dim={EMBED_DIM} | heads={N_HEADS} | "
-        f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | optimizer={OPTIMIZER} | "
+        f"layers={N_LAYERS} | ff={FF_DIM} | lr={LR:g} | optimizer={OPTIMIZER} | wd={WEIGHT_DECAY:g} | "
         f"dtype={PARAM_DTYPE} | remat={USE_REMAT} | "
         f"logit_chunk={LOGIT_CHUNK_SIZE} | logit_chunk_per_chip={logit_chunk_mb():.0f}MB | "
         f"attn_matrix={attention_matrix_mb():.1f}MB"

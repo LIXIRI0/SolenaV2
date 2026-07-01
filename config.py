@@ -139,6 +139,7 @@ if "PARAM_DTYPE" not in globals():
     PARAM_DTYPE = "float32"
 if "USE_MESH" not in globals():
     USE_MESH = False
+WEIGHT_DECAY = float(os.getenv("SOLENA_WEIGHT_DECAY", "0.01"))
 USE_DATA_PARALLEL = NUM_DEVICES > 1
 USE_REMAT = PROFILE in ("kaggle_tpu_8", "trc_tpu_16", "trc_tpu_64", "tpu_train")
 
@@ -272,6 +273,8 @@ def validate_config() -> None:
         raise ValueError("VAL_RATIO must be between 0 and 1")
     if OPTIMIZER not in {"adamw", "adafactor"}:
         raise ValueError(f"unknown OPTIMIZER: {OPTIMIZER}")
+    if WEIGHT_DECAY < 0:
+        raise ValueError("WEIGHT_DECAY must be >= 0")
     if PARAM_DTYPE not in {"float32", "bfloat16"}:
         raise ValueError(f"unknown PARAM_DTYPE: {PARAM_DTYPE}")
     if GEN_TEMPERATURE <= 0:
